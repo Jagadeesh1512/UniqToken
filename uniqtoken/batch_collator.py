@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from .tokenizer import CustomTokenizer, _validate_dropout_prob
+from .byte_codec import validate_dropout_prob
+from .tokenizer import CustomTokenizer
 
 
 @dataclass
@@ -81,7 +82,7 @@ class BatchCollator:
             raise ValueError("max_length must not be negative")
         if padding and self.pad_id is None:
             raise ValueError(f"padding token {self.pad_token!r} is not in the vocabulary")
-        _validate_dropout_prob(dropout_prob)
+        validate_dropout_prob(dropout_prob)
 
         batch_ids: List[List[int]] = []
         batch_tokens: List[List[str]] = []

@@ -135,8 +135,14 @@ def _make_byte_fallback_tokenizer() -> CustomTokenizer:
 
 class SubwordRegularizationTestBase(unittest.TestCase):
     def setUp(self):
+        self._rng_state = random.getstate()
         self.tokenizer = _make_tokenizer()
         self.collator = BatchCollator(self.tokenizer, padding_token="the", bos_token=None, eos_token=None)
+
+    def tearDown(self):
+        # Tests seed the process-global RNG; restore it so test order
+        # cannot influence later stochastic tests.
+        random.setstate(self._rng_state)
 
 
 class DropoutDeterminismTests(SubwordRegularizationTestBase):
@@ -184,6 +190,45 @@ class DropoutValidationTests(SubwordRegularizationTestBase):
                 lambda p=bad: self.tokenizer.encode_to_ids_batch([TEXT], dropout_prob=p),
                 lambda p=bad: self.tokenizer.encode_with_offsets_batch([TEXT], dropout_prob=p),
                 lambda p=bad: self.collator.batch_encode([TEXT], padding=False, dropout_prob=p),
+                lambda p=bad: _make_bpe_model().encode("the quick", dropout_prob=p),
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    call()
+                self.assertIn(DROPOUT_ERROR, str(ctx.exception))
+
+    def test_invalid_dropout_prob_raises_even_for_empty_inputs(self):
+        # Validation must run before the empty-text / empty-batch fast
+        # paths: invalid values may never succeed silently.
+        for bad in (-0.1, 1.0, "0.5"):
+            for call in (
+                lambda p=bad: self.tokenizer.encode("", dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_to_ids("", dropout_prob=p),
+                lambda p=bad: self.tokenizer.sample("", dropout_prob=p),
+                lambda p=bad: self.tokenizer.sample_to_ids("", dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_with_offsets("", dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_batch([], dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_to_ids_batch([], dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_with_offsets_batch([], dropout_prob=p),
+                lambda p=bad: self.collator.batch_encode([], dropout_prob=p),
+                lambda p=bad: _make_bpe_model().encode("", dropout_prob=p),
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    call()
+                self.assertIn(DROPOUT_ERROR, str(ctx.exception))
+
+    def test_boolean_dropout_prob_is_rejected(self):
+        # bool is an int subclass: False would silently act as 0.0 and
+        # True as 1.0, so both must be rejected explicitly.
+        for bad in (False, True):
+            for call in (
+                lambda p=bad: self.tokenizer.encode(TEXT, dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_to_ids(TEXT, dropout_prob=p),
+                lambda p=bad: self.tokenizer.sample(TEXT, dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_with_offsets(TEXT, dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_batch([TEXT], dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_to_ids_batch([TEXT], dropout_prob=p),
+                lambda p=bad: self.tokenizer.encode_with_offsets_batch([TEXT], dropout_prob=p),
+                lambda p=bad: self.collator.batch_encode([TEXT], dropout_prob=p),
                 lambda p=bad: _make_bpe_model().encode("the quick", dropout_prob=p),
             ):
                 with self.assertRaises(ValueError) as ctx:
@@ -320,6 +365,12 @@ class MergeBoundaryBlockingTests(unittest.TestCase):
 
 
 class DropoutDiversityTests(unittest.TestCase):
+    def setUp(self):
+        self._rng_state = random.getstate()
+
+    def tearDown(self):
+        random.setstate(self._rng_state)
+
     def test_dropout_produces_multiple_valid_segmentations_over_1000_runs(self):
         tokenizer = _make_two_pair_tokenizer()
         random.seed(101)
@@ -339,6 +390,12 @@ class DropoutDiversityTests(unittest.TestCase):
 
 class TypoRobustnessTests(unittest.TestCase):
     """Typo-injected text must stay lossless and behave sensibly under dropout."""
+
+    def setUp(self):
+        self._rng_state = random.getstate()
+
+    def tearDown(self):
+        random.setstate(self._rng_state)
 
     TYPO_TEXTS = (
         "teh quick the fox",   # transposition

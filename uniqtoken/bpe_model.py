@@ -162,9 +162,9 @@ class BPEModel:
         Provilkov et al. 2020); a dropped merge is final for the call.
         ``0.0`` (default) keeps tokenization fully deterministic.
         """
+        validate_dropout_prob(dropout_prob)
         if not text:
             return []
-        validate_dropout_prob(dropout_prob)
 
         words = text.split(" ")
         tokens: List[str] = []

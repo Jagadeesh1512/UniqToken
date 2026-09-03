@@ -435,9 +435,9 @@ class CustomTokenizer:
         """
         if not isinstance(text, str):
             raise TypeError(f"text must be a string, got {type(text).__name__}")
+        _validate_dropout_prob(dropout_prob)
         if not text:
             return []
-        _validate_dropout_prob(dropout_prob)
 
         # Fused native fast path: sanitize (identity here), normalization,
         # pre-tokenization and Viterbi all happen in ONE FFI call. The Rust
@@ -514,11 +514,11 @@ class CustomTokenizer:
         """
         if not isinstance(text, str):
             raise TypeError(f"text must be a string, got {type(text).__name__}")
+        _validate_dropout_prob(dropout_prob)
         if not text:
             return []
         if alpha <= 0:
             raise ValueError(f"alpha must be greater than zero, got {alpha}")
-        _validate_dropout_prob(dropout_prob)
 
         sanitized_text = self._prepare_text(
             text,
@@ -587,9 +587,9 @@ class CustomTokenizer:
         """
         if not isinstance(text, str):
             raise TypeError(f"text must be a string, got {type(text).__name__}")
+        _validate_dropout_prob(dropout_prob)
         if not text:
             return []
-        _validate_dropout_prob(dropout_prob)
 
         prepared_text, prepared_alignment = self._prepare_text_with_alignment(
             text,
@@ -634,13 +634,17 @@ class CustomTokenizer:
 
         ``dropout_prob`` is honored on every row; non-zero values bypass the
         native Rust fused batch path and use the per-text Python path
-        (the native core cannot reproduce Python's RNG).
+        (the native core cannot reproduce Python's RNG). With
+        ``dropout_prob > 0`` and ``num_workers > 1``, rows draw from the
+        shared global ``random`` module under thread scheduling, so
+        per-row segmentations are not reproducible across runs even with
+        a fixed seed.
         """
+        _validate_dropout_prob(dropout_prob)
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
             raise ValueError(f"num_workers must be >= 1 (or None), got {num_workers}")
-        _validate_dropout_prob(dropout_prob)
         if len(texts) <= 64 or num_workers == 1:
             return [
                 self.encode(
@@ -677,13 +681,15 @@ class CustomTokenizer:
         """Encodes a sequence of texts to token IDs, parallelizing across workers when batch is large.
 
         Non-zero ``dropout_prob`` bypasses the native Rust fused batch path
-        and encodes each text through the Python path.
+        and encodes each text through the Python path. With
+        ``dropout_prob > 0`` and ``num_workers > 1``, per-row results are
+        not reproducible across runs because rows share the global RNG.
         """
+        _validate_dropout_prob(dropout_prob)
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
             raise ValueError(f"num_workers must be >= 1 (or None), got {num_workers}")
-        _validate_dropout_prob(dropout_prob)
 
         # Fused native batch: one FFI + Rayon. Only when the whole batch can be
         # proven equivalent to the per-text Python path (gates below). Skipped
@@ -737,12 +743,14 @@ class CustomTokenizer:
 
         Merges dropped by non-zero ``dropout_prob`` keep their constituents'
         spans intact, so spans tile each input without gaps or overlaps.
+        With ``dropout_prob > 0`` and ``num_workers > 1``, per-row results
+        are not reproducible across runs because rows share the global RNG.
         """
+        _validate_dropout_prob(dropout_prob)
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
             raise ValueError(f"num_workers must be >= 1 (or None), got {num_workers}")
-        _validate_dropout_prob(dropout_prob)
         if len(texts) <= 64 or num_workers == 1:
             return [
                 self.encode_with_offsets(
