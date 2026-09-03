@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,12 @@ except ImportError:
         import caliper_core as _native_core  # type: ignore[no-redef]
     except ImportError:
         _native_core = None  # type: ignore[assignment]
+
+
+def _validate_dropout_prob(dropout_prob: float) -> None:
+    """Validates a BPE/SuperBPE dropout probability (Provilkov et al., 2020)."""
+    if not (0.0 <= dropout_prob < 1.0):
+        raise ValueError(f"dropout_prob must be in range [0.0, 1.0), got {dropout_prob}")
 
 
 @dataclass(frozen=True)
@@ -187,8 +194,14 @@ class CustomTokenizer:
         except (ValueError, TypeError, AttributeError):
             return None
 
-    def _apply_cross_word_merges(self, tokens: List[str]) -> List[str]:
-        """Greedily fuses adjacent tokens until no SuperBPE merge remains."""
+    def _apply_cross_word_merges(self, tokens: List[str], dropout_prob: float = 0.0) -> List[str]:
+        """Greedily fuses adjacent tokens until no SuperBPE merge remains.
+
+        With ``dropout_prob > 0`` each candidate merge is independently
+        skipped with that probability (SuperBPE merge dropout), which keeps
+        the constituent tokens intact so stochastic regularization reaches
+        cross-word merges as well.
+        """
         cross = self._cross_word_tokens()
         if not cross:
             return tokens
@@ -199,9 +212,13 @@ class CustomTokenizer:
             i = 0
             while i < len(current):
                 if i + 1 < len(current) and current[i] + current[i + 1] in cross:
-                    merged.append(current[i] + current[i + 1])
-                    i += 2
-                    changed = True
+                    if dropout_prob > 0.0 and random.random() < dropout_prob:
+                        merged.append(current[i])
+                        i += 1
+                    else:
+                        merged.append(current[i] + current[i + 1])
+                        i += 2
+                        changed = True
                 else:
                     merged.append(current[i])
                     i += 1
@@ -209,7 +226,8 @@ class CustomTokenizer:
                 return merged
             current = merged
 
-    def _apply_cross_word_merges_with_spans(self, tokens: List[Token]) -> List[Token]:
+    def _apply_cross_word_merges_with_spans(self, tokens: List[Token], dropout_prob: float = 0.0) -> List[Token]:
+        """Span-preserving counterpart of :meth:`_apply_cross_word_merges`."""
         cross = self._cross_word_tokens()
         if not cross:
             return tokens
@@ -220,6 +238,10 @@ class CustomTokenizer:
             i = 0
             while i < len(current):
                 if i + 1 < len(current) and current[i].text + current[i + 1].text in cross:
+                    if dropout_prob > 0.0 and random.random() < dropout_prob:
+                        merged.append(current[i])
+                        i += 1
+                        continue
                     a, b = current[i], current[i + 1]
                     text = a.text + b.text
                     merged.append(
@@ -356,6 +378,7 @@ class CustomTokenizer:
         text: str,
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
+        dropout_prob: float = 0.0,
     ) -> List[str]:
         """
         Tokenizes input text into string tokens with byte fallback.
@@ -364,13 +387,20 @@ class CustomTokenizer:
             raise TypeError(f"text must be a string, got {type(text).__name__}")
         if not text:
             return []
+        _validate_dropout_prob(dropout_prob)
 
         # Fused native fast path: sanitize (identity here), normalization,
         # pre-tokenization and Viterbi all happen in ONE FFI call. The Rust
         # side re-checks the security gate (NFKC-canonical "<|") and raises,
-        # falling back to the full Python pipeline below.
+        # falling back to the full Python pipeline below. Skipped when merge
+        # dropout is active: the native core cannot reproduce Python's RNG.
         native_kwargs = self._native_pipeline_kwargs()
-        if native_kwargs is not None and allowed_special == "none" and disallowed_special_action == "escape":
+        if (
+            native_kwargs is not None
+            and dropout_prob == 0.0
+            and allowed_special == "none"
+            and disallowed_special_action == "escape"
+        ):
             assert _native_core is not None
             rust_trie = self.model._get_rust_trie()
             if rust_trie is None:
@@ -412,7 +442,7 @@ class CustomTokenizer:
                 else:
                     all_tokens.extend(next(it))
 
-        return self._apply_cross_word_merges(all_tokens)
+        return self._apply_cross_word_merges(all_tokens, dropout_prob=dropout_prob)
 
     def sample(
         self,
@@ -420,6 +450,7 @@ class CustomTokenizer:
         alpha: float = 0.5,
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
+        dropout_prob: float = 0.0,
     ) -> List[str]:
         """Sample tokenization using Subword Regularization (Kudo 2018)."""
         if not isinstance(text, str):
@@ -428,6 +459,7 @@ class CustomTokenizer:
             return []
         if alpha <= 0:
             raise ValueError(f"alpha must be greater than zero, got {alpha}")
+        _validate_dropout_prob(dropout_prob)
 
         sanitized_text = self._prepare_text(
             text,
@@ -444,18 +476,20 @@ class CustomTokenizer:
             else:
                 all_tokens.extend(self.model.sample(chunk, alpha=alpha))
 
-        return self._apply_cross_word_merges(all_tokens)
+        return self._apply_cross_word_merges(all_tokens, dropout_prob=dropout_prob)
 
     def encode_to_ids(
         self,
         text: str,
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
+        dropout_prob: float = 0.0,
     ) -> List[int]:
         tokens = self.encode(
             text,
             allowed_special=allowed_special,
             disallowed_special_action=disallowed_special_action,
+            dropout_prob=dropout_prob,
         )
         unk_id = self.model.token_to_id.get(self.model.unk_token, 0)
         return [self.model.token_to_id.get(t, unk_id) for t in tokens]
@@ -466,12 +500,14 @@ class CustomTokenizer:
         alpha: float = 0.5,
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
+        dropout_prob: float = 0.0,
     ) -> List[int]:
         tokens = self.sample(
             text,
             alpha=alpha,
             allowed_special=allowed_special,
             disallowed_special_action=disallowed_special_action,
+            dropout_prob=dropout_prob,
         )
         unk_id = self.model.token_to_id.get(self.model.unk_token, 0)
         return [self.model.token_to_id.get(t, unk_id) for t in tokens]
@@ -481,11 +517,13 @@ class CustomTokenizer:
         text: str,
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
+        dropout_prob: float = 0.0,
     ) -> List[Token]:
         if not isinstance(text, str):
             raise TypeError(f"text must be a string, got {type(text).__name__}")
         if not text:
             return []
+        _validate_dropout_prob(dropout_prob)
 
         prepared_text, prepared_alignment = self._prepare_text_with_alignment(
             text,
@@ -516,7 +554,7 @@ class CustomTokenizer:
                     )
                     result.append(Token(text=st, id=t_id, raw_span=raw_span))
 
-        return self._apply_cross_word_merges_with_spans(result)
+        return self._apply_cross_word_merges_with_spans(result, dropout_prob=dropout_prob)
 
     def encode_batch(
         self,
@@ -524,18 +562,21 @@ class CustomTokenizer:
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
         num_workers: Optional[int] = None,
+        dropout_prob: float = 0.0,
     ) -> List[List[str]]:
         """Encodes a sequence of texts, parallelizing across workers when batch is large."""
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
             raise ValueError(f"num_workers must be >= 1 (or None), got {num_workers}")
+        _validate_dropout_prob(dropout_prob)
         if len(texts) <= 64 or num_workers == 1:
             return [
                 self.encode(
                     t,
                     allowed_special=allowed_special,
                     disallowed_special_action=disallowed_special_action,
+                    dropout_prob=dropout_prob,
                 )
                 for t in texts
             ]
@@ -548,6 +589,7 @@ class CustomTokenizer:
                         t,
                         allowed_special=allowed_special,
                         disallowed_special_action=disallowed_special_action,
+                        dropout_prob=dropout_prob,
                     ),
                     texts,
                 )
@@ -559,19 +601,23 @@ class CustomTokenizer:
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
         num_workers: Optional[int] = None,
+        dropout_prob: float = 0.0,
     ) -> List[List[int]]:
         """Encodes a sequence of texts to token IDs, parallelizing across workers when batch is large."""
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
             raise ValueError(f"num_workers must be >= 1 (or None), got {num_workers}")
+        _validate_dropout_prob(dropout_prob)
 
         # Fused native batch: one FFI + Rayon. Only when the whole batch can be
-        # proven equivalent to the per-text Python path (gates below).
+        # proven equivalent to the per-text Python path (gates below). Skipped
+        # when dropout is active: the native core cannot reproduce Python's RNG.
         if (
             allowed_special == "none"
             and disallowed_special_action == "escape"
             and (num_workers is None or num_workers > 1)
+            and dropout_prob == 0.0
         ):
             native_tokens = self._encode_tokens_native_batch(texts)
             if native_tokens is not None:
@@ -585,6 +631,7 @@ class CustomTokenizer:
                     t,
                     allowed_special=allowed_special,
                     disallowed_special_action=disallowed_special_action,
+                    dropout_prob=dropout_prob,
                 )
                 for t in texts
             ]
@@ -597,6 +644,7 @@ class CustomTokenizer:
                         t,
                         allowed_special=allowed_special,
                         disallowed_special_action=disallowed_special_action,
+                        dropout_prob=dropout_prob,
                     ),
                     texts,
                 )
@@ -608,18 +656,21 @@ class CustomTokenizer:
         allowed_special: Union[str, Set[str], List[str]] = "none",
         disallowed_special_action: str = "escape",
         num_workers: Optional[int] = None,
+        dropout_prob: float = 0.0,
     ) -> List[List[Token]]:
         """Encodes a sequence of texts with exact spans, parallelizing across workers when batch is large."""
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
             raise ValueError(f"num_workers must be >= 1 (or None), got {num_workers}")
+        _validate_dropout_prob(dropout_prob)
         if len(texts) <= 64 or num_workers == 1:
             return [
                 self.encode_with_offsets(
                     t,
                     allowed_special=allowed_special,
                     disallowed_special_action=disallowed_special_action,
+                    dropout_prob=dropout_prob,
                 )
                 for t in texts
             ]
@@ -632,6 +683,7 @@ class CustomTokenizer:
                         t,
                         allowed_special=allowed_special,
                         disallowed_special_action=disallowed_special_action,
+                        dropout_prob=dropout_prob,
                     ),
                     texts,
                 )
