@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 from .bpe_model import BPEModel
-from .byte_codec import ByteFallbackEngine
+from .byte_codec import ByteFallbackEngine, validate_dropout_prob as _validate_dropout_prob
 from .indentation_compressor import IndentationCompressor
 from .pre_tokenizer import Normalizer, RegexPreTokenizer
 from .security_shield import SecurityShield
@@ -27,12 +27,6 @@ except ImportError:
         import caliper_core as _native_core  # type: ignore[no-redef]
     except ImportError:
         _native_core = None  # type: ignore[assignment]
-
-
-def _validate_dropout_prob(dropout_prob: float) -> None:
-    """Validates a BPE/SuperBPE dropout probability (Provilkov et al., 2020)."""
-    if not (0.0 <= dropout_prob < 1.0):
-        raise ValueError(f"dropout_prob must be in range [0.0, 1.0), got {dropout_prob}")
 
 
 @dataclass(frozen=True)
@@ -200,23 +194,45 @@ class CustomTokenizer:
         With ``dropout_prob > 0`` each candidate merge is independently
         skipped with that probability (SuperBPE merge dropout), which keeps
         the constituent tokens intact so stochastic regularization reaches
-        cross-word merges as well.
+        cross-word merges as well. A boundary dropped by dropout stays
+        blocked for the rest of this call: later merge passes never retry
+        it unless one of its constituent pieces changes (e.g. by absorbing
+        a neighbour), so the drawn segmentation cannot depend on unrelated
+        merges elsewhere in the sequence.
         """
         cross = self._cross_word_tokens()
         if not cross:
             return tokens
         current = tokens
+        # Positions (in ``current``) whose right-hand merge boundary was
+        # dropped by dropout. They persist across passes — remapped as
+        # elements shift — and are only released when one of the two
+        # constituent pieces changes (absorbed by a neighbouring merge).
+        blocked: Set[int] = set()
         while True:
             merged: List[str] = []
             changed = False
             i = 0
+            remap: Dict[int, int] = {}  # old pass position -> position in ``merged``
             while i < len(current):
-                if i + 1 < len(current) and current[i] + current[i + 1] in cross:
+                m = len(merged)
+                remap[i] = m
+                if (
+                    i + 1 < len(current)
+                    and i not in blocked
+                    and current[i] + current[i + 1] in cross
+                ):
                     if dropout_prob > 0.0 and random.random() < dropout_prob:
                         merged.append(current[i])
+                        blocked.add(i)
                         i += 1
                     else:
                         merged.append(current[i] + current[i + 1])
+                        remap[i + 1] = m
+                        # Elements i and i+1 fuse: boundary (i, i+1) disappears
+                        # and the neighbouring boundaries (i-1, i) / (i+1, i+2)
+                        # gain a changed constituent, so unblock all three.
+                        blocked.difference_update((i - 1, i, i + 1))
                         i += 2
                         changed = True
                 else:
@@ -225,21 +241,39 @@ class CustomTokenizer:
             if not changed:
                 return merged
             current = merged
+            blocked = {remap[j] for j in blocked}
 
     def _apply_cross_word_merges_with_spans(self, tokens: List[Token], dropout_prob: float = 0.0) -> List[Token]:
-        """Span-preserving counterpart of :meth:`_apply_cross_word_merges`."""
+        """Span-preserving counterpart of :meth:`_apply_cross_word_merges`.
+
+        Merged tokens carry the union of their constituents' raw spans, and
+        boundaries dropped by ``dropout_prob > 0`` stay blocked for the rest
+        of the call exactly as in :meth:`_apply_cross_word_merges`.
+        """
         cross = self._cross_word_tokens()
         if not cross:
             return tokens
         current = tokens
+        # Positions (in ``current``) whose right-hand merge boundary was
+        # dropped by dropout; same persistence/remap rules as in
+        # :meth:`_apply_cross_word_merges`.
+        blocked: Set[int] = set()
         while True:
             merged: List[Token] = []
             changed = False
             i = 0
+            remap: Dict[int, int] = {}  # old pass position -> position in ``merged``
             while i < len(current):
-                if i + 1 < len(current) and current[i].text + current[i + 1].text in cross:
+                m = len(merged)
+                remap[i] = m
+                if (
+                    i + 1 < len(current)
+                    and i not in blocked
+                    and current[i].text + current[i + 1].text in cross
+                ):
                     if dropout_prob > 0.0 and random.random() < dropout_prob:
                         merged.append(current[i])
+                        blocked.add(i)
                         i += 1
                         continue
                     a, b = current[i], current[i + 1]
@@ -251,6 +285,8 @@ class CustomTokenizer:
                             raw_span=(a.raw_span[0], b.raw_span[1]),
                         )
                     )
+                    remap[i + 1] = m
+                    blocked.difference_update((i - 1, i, i + 1))
                     i += 2
                     changed = True
                 else:
@@ -259,6 +295,7 @@ class CustomTokenizer:
             if not changed:
                 return merged
             current = merged
+            blocked = {remap[j] for j in blocked}
 
     def _prepare_text(
         self,
@@ -382,6 +419,19 @@ class CustomTokenizer:
     ) -> List[str]:
         """
         Tokenizes input text into string tokens with byte fallback.
+
+        Args:
+            text: Input text to tokenize.
+            allowed_special: Which special tokens are allowed in ``text``.
+            disallowed_special_action: Action for disallowed special tokens.
+            dropout_prob: Probability of independently skipping each
+                candidate SuperBPE cross-word merge (merge dropout,
+                Provilkov et al. 2020). ``0.0`` (default) keeps
+                tokenization fully deterministic; values in ``(0.0, 1.0)``
+                use the Python path only — the native Rust fast path is
+                bypassed because it cannot reproduce Python's RNG. A
+                dropped merge boundary is final for the call and is never
+                retried by later merge passes.
         """
         if not isinstance(text, str):
             raise TypeError(f"text must be a string, got {type(text).__name__}")
@@ -452,7 +502,16 @@ class CustomTokenizer:
         disallowed_special_action: str = "escape",
         dropout_prob: float = 0.0,
     ) -> List[str]:
-        """Sample tokenization using Subword Regularization (Kudo 2018)."""
+        """Sample tokenization using Subword Regularization (Kudo 2018).
+
+        Args:
+            text: Input text to tokenize.
+            alpha: Sampling temperature for the lattice sampler.
+            allowed_special: Which special tokens are allowed in ``text``.
+            disallowed_special_action: Action for disallowed special tokens.
+            dropout_prob: Merge-dropout probability applied to SuperBPE
+                cross-word merges; behaves as in :meth:`encode`.
+        """
         if not isinstance(text, str):
             raise TypeError(f"text must be a string, got {type(text).__name__}")
         if not text:
@@ -485,6 +544,7 @@ class CustomTokenizer:
         disallowed_special_action: str = "escape",
         dropout_prob: float = 0.0,
     ) -> List[int]:
+        """Encodes text to token IDs; ``dropout_prob`` behaves as in :meth:`encode`."""
         tokens = self.encode(
             text,
             allowed_special=allowed_special,
@@ -519,6 +579,12 @@ class CustomTokenizer:
         disallowed_special_action: str = "escape",
         dropout_prob: float = 0.0,
     ) -> List[Token]:
+        """Encodes text to tokens with exact character spans.
+
+        Merges dropped by ``dropout_prob > 0`` keep their constituents'
+        spans intact, so the emitted spans always tile the input without
+        gaps or overlaps and decode reconstruction is preserved.
+        """
         if not isinstance(text, str):
             raise TypeError(f"text must be a string, got {type(text).__name__}")
         if not text:
@@ -564,7 +630,12 @@ class CustomTokenizer:
         num_workers: Optional[int] = None,
         dropout_prob: float = 0.0,
     ) -> List[List[str]]:
-        """Encodes a sequence of texts, parallelizing across workers when batch is large."""
+        """Encodes a sequence of texts, parallelizing across workers when batch is large.
+
+        ``dropout_prob`` is honored on every row; non-zero values bypass the
+        native Rust fused batch path and use the per-text Python path
+        (the native core cannot reproduce Python's RNG).
+        """
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
@@ -603,7 +674,11 @@ class CustomTokenizer:
         num_workers: Optional[int] = None,
         dropout_prob: float = 0.0,
     ) -> List[List[int]]:
-        """Encodes a sequence of texts to token IDs, parallelizing across workers when batch is large."""
+        """Encodes a sequence of texts to token IDs, parallelizing across workers when batch is large.
+
+        Non-zero ``dropout_prob`` bypasses the native Rust fused batch path
+        and encodes each text through the Python path.
+        """
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:
@@ -658,7 +733,11 @@ class CustomTokenizer:
         num_workers: Optional[int] = None,
         dropout_prob: float = 0.0,
     ) -> List[List[Token]]:
-        """Encodes a sequence of texts with exact spans, parallelizing across workers when batch is large."""
+        """Encodes a sequence of texts with exact spans, parallelizing across workers when batch is large.
+
+        Merges dropped by non-zero ``dropout_prob`` keep their constituents'
+        spans intact, so spans tile each input without gaps or overlaps.
+        """
         if not texts:
             return []
         if num_workers is not None and num_workers < 1:

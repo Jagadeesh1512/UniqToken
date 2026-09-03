@@ -4,17 +4,7 @@ import heapq
 import random
 from typing import Dict, List, Optional, Set, Tuple
 
-from .byte_codec import ByteFallbackEngine
-
-
-def _validate_dropout_prob(dropout_prob: float) -> None:
-    """Validates a BPE dropout probability (Provilkov et al., 2020).
-
-    Inlined here (rather than imported from ``tokenizer``) to avoid a
-    circular import.
-    """
-    if not (0.0 <= dropout_prob < 1.0):
-        raise ValueError(f"dropout_prob must be in range [0.0, 1.0), got {dropout_prob}")
+from .byte_codec import ByteFallbackEngine, validate_dropout_prob
 
 
 class BPEModel:
@@ -94,6 +84,8 @@ class BPEModel:
         With ``dropout_prob > 0`` each live merge candidate is skipped
         with that probability (BPE dropout, Provilkov et al. 2020) without
         mutating the symbol list, so the constituent symbols stay intact.
+        A dropped candidate is discarded, making the drop final for this
+        call: a later merge of a neighbouring pair never resurrects it.
         """
         if len(symbols) <= 1:
             return list(symbols)
@@ -164,10 +156,15 @@ class BPEModel:
     def encode(self, text: str, dropout_prob: float = 0.0) -> List[str]:
         """
         Segments text by applying BPE merges on whitespace-delimited word tokens.
+
+        With ``dropout_prob > 0`` each eligible merge candidate is
+        independently skipped with that probability (BPE dropout,
+        Provilkov et al. 2020); a dropped merge is final for the call.
+        ``0.0`` (default) keeps tokenization fully deterministic.
         """
         if not text:
             return []
-        _validate_dropout_prob(dropout_prob)
+        validate_dropout_prob(dropout_prob)
 
         words = text.split(" ")
         tokens: List[str] = []
@@ -178,6 +175,7 @@ class BPEModel:
         return tokens
 
     def encode_to_ids(self, text: str, dropout_prob: float = 0.0) -> List[int]:
+        """Encodes text to token IDs; ``dropout_prob`` behaves as in :meth:`encode`."""
         tokens = self.encode(text, dropout_prob=dropout_prob)
         unk_id = self.token_to_id.get("<|unk|>", 0)
         return [self.token_to_id.get(t, unk_id) for t in tokens]

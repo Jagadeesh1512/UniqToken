@@ -72,6 +72,10 @@ class BatchCollator:
     ) -> BatchEncoding:
         """
         Batch encodes a list of texts into aligned 2D token ID matrices and attention masks.
+
+        ``dropout_prob`` propagates to the underlying tokenizer on every
+        row; non-zero values bypass native fused batch paths so each
+        candidate merge is dropped exactly once per encode call.
         """
         if max_length is not None and max_length < 0:
             raise ValueError("max_length must not be negative")
