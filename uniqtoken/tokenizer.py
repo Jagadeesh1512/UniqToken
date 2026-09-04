@@ -217,11 +217,7 @@ class CustomTokenizer:
             while i < len(current):
                 m = len(merged)
                 remap[i] = m
-                if (
-                    i + 1 < len(current)
-                    and i not in blocked
-                    and current[i] + current[i + 1] in cross
-                ):
+                if i + 1 < len(current) and i not in blocked and current[i] + current[i + 1] in cross:
                     if dropout_prob > 0.0 and random.random() < dropout_prob:
                         merged.append(current[i])
                         blocked.add(i)
@@ -266,11 +262,7 @@ class CustomTokenizer:
             while i < len(current):
                 m = len(merged)
                 remap[i] = m
-                if (
-                    i + 1 < len(current)
-                    and i not in blocked
-                    and current[i].text + current[i + 1].text in cross
-                ):
+                if i + 1 < len(current) and i not in blocked and current[i].text + current[i + 1].text in cross:
                     if dropout_prob > 0.0 and random.random() < dropout_prob:
                         merged.append(current[i])
                         blocked.add(i)

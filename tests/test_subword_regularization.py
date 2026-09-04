@@ -398,8 +398,8 @@ class TypoRobustnessTests(unittest.TestCase):
         random.setstate(self._rng_state)
 
     TYPO_TEXTS = (
-        "teh quick the fox",   # transposition
-        "the quik teh fxo",    # missing / swapped letters
+        "teh quick the fox",  # transposition
+        "the quik teh fxo",  # missing / swapped letters
         "the quick the foxz",  # trailing garbage
         "Teh quick THE fox!",  # case change + punctuation (byte fallback)
     )
@@ -433,4 +433,3 @@ class TypoRobustnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
