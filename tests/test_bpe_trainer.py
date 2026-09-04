@@ -1,4 +1,4 @@
-"""Tests for the flat bucket queue BPE training implementation (Issue #35).
+﻿"""Tests for the flat bucket queue BPE training implementation (Issue #35).
 
 Replaces the lazy binary-heap pair priority structure in ``BPETrainer`` with
 a Dial's-algorithm flat bucket queue. The parity tests re-run the previous
@@ -27,6 +27,28 @@ class FlatBucketQueueTests(unittest.TestCase):
         self.assertEqual(queue.get_count(("b", "c")), 5)
         self.assertEqual(len(queue), 2)
         self.assertEqual(queue.get_count(("c", "d")), 0)
+
+
+    def test_add_duplicate_overwrites_bucket_membership(self):
+        """Calling add() twice for the same pair must overwrite cleanly and pop once."""
+        queue = FlatBucketQueue()
+        queue.add(("a", "b"), 5)
+        queue.add(("a", "b"), 10)
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue.get_count(("a", "b")), 10)
+        self.assertEqual(queue.pop_max(), ("a", "b"))
+        self.assertIsNone(queue.pop_max())
+
+    def test_bucket_heap_tie_breaking_order(self):
+        """Tied pairs in the same bucket must be popped in deterministic lexicographical order."""
+        queue = FlatBucketQueue()
+        queue.add(("b", "b"), 5)
+        queue.add(("a", "a"), 5)
+        queue.add(("a", "b"), 5)
+        self.assertEqual(queue.pop_max(), ("a", "a"))
+        self.assertEqual(queue.pop_max(), ("a", "b"))
+        self.assertEqual(queue.pop_max(), ("b", "b"))
+        self.assertIsNone(queue.pop_max())
 
     def test_add_ignores_non_positive_freq(self):
         queue = FlatBucketQueue()

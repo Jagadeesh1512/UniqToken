@@ -1,5 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import heapq
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -10,26 +11,39 @@ from .byte_codec import ByteFallbackEngine
 class FlatBucketQueue:
     """Integer-frequency priority queue (Dial's flat buckets) for BPE pairs.
 
-    Pairs are stored in buckets indexed by their current count: inserting or
-    moving a pair between buckets is O(1) (two set operations) compared to
-    O(log K) for a binary heap, and ``pop_max`` advances a high-water mark
-    pointer instead of scanning. Because a pair's bucket always matches its
-    live count, stale tombstone entries and the "count drifted since push"
-    re-push loop required by the previous heap implementation (Issue #8)
-    cannot occur.
+    Pairs are grouped into buckets indexed by their integer frequency. Moving
+    a pair between frequency buckets is O(1) via hash set operations, and
+    ``pop_max`` advances a high-water mark pointer across non-empty buckets in
+    O(1) amortized time. Deterministic tie-breaking among pairs sharing the
+    same frequency is maintained with a per-bucket min-heap in O(log B) time,
+    where B is the number of tied pairs at that frequency.
+
+    Stale tombstones cannot accumulate: a pair only ever lives in the single
+    bucket matching its live count, and stale heap entries are discarded
+    lazily when popped.
     """
 
     def __init__(self) -> None:
         self._buckets: Dict[int, Set[Tuple[str, str]]] = defaultdict(set)
+        self._bucket_heaps: Dict[int, List[Tuple[str, Tuple[str, str]]]] = defaultdict(list)
         self._counts: Dict[Tuple[str, str], int] = {}
         self._max_freq: int = 0
 
     def add(self, pair: Tuple[str, str], freq: int) -> None:
-        """Insert ``pair`` with an initial positive frequency."""
+        """Insert ``pair`` with an initial positive frequency.
+
+        If ``pair`` already exists, its previous bucket membership is
+        discarded before updating to the new frequency, so a pair is never
+        present in two buckets at once.
+        """
         if freq <= 0:
             return
+        old_freq = self._counts.get(pair)
+        if old_freq is not None and old_freq in self._buckets:
+            self._buckets[old_freq].discard(pair)
         self._counts[pair] = freq
         self._buckets[freq].add(pair)
+        heapq.heappush(self._bucket_heaps[freq], (pair[0] + pair[1], pair))
         if freq > self._max_freq:
             self._max_freq = freq
 
@@ -42,30 +56,49 @@ class FlatBucketQueue:
         """
         old_freq = self._counts.get(pair, 0)
         new_freq = old_freq + delta
-        if old_freq > 0:
+        if old_freq > 0 and old_freq in self._buckets:
             self._buckets[old_freq].discard(pair)
         if new_freq > 0:
             self._counts[pair] = new_freq
             self._buckets[new_freq].add(pair)
+            heapq.heappush(self._bucket_heaps[new_freq], (pair[0] + pair[1], pair))
             if new_freq > self._max_freq:
                 self._max_freq = new_freq
         else:
             self._counts.pop(pair, None)
 
     def pop_max(self) -> Optional[Tuple[str, str]]:
-        """Remove and return the pair with the highest frequency, or None."""
-        while self._max_freq > 0 and not self._buckets[self._max_freq]:
+        """Remove and return the pair with the highest frequency, or None.
+
+        The per-bucket heap is not mutated on ``update``/``remove`` (that would
+        require O(B) deletion); entries are instead validated lazily when
+        popped, so stale heap entries for pairs that moved or were removed are
+        simply skipped.
+        """
+        while self._max_freq > 0:
+            bucket = self._buckets[self._max_freq]
+            if not bucket:
+                self._buckets.pop(self._max_freq, None)
+                self._bucket_heaps.pop(self._max_freq, None)
+                self._max_freq -= 1
+                continue
+            heap = self._bucket_heaps[self._max_freq]
+            while heap:
+                _, pair = heapq.heappop(heap)
+                if pair in bucket:
+                    bucket.remove(pair)
+                    self._counts.pop(pair, None)
+                    if not bucket:
+                        self._buckets.pop(self._max_freq, None)
+                        self._bucket_heaps.pop(self._max_freq, None)
+                        self._max_freq -= 1
+                    return pair
+            # Heap exhausted without finding a live member: the bucket holds
+            # only stale entries, so drop it and keep scanning downward.
+            self._buckets.pop(self._max_freq, None)
+            self._bucket_heaps.pop(self._max_freq, None)
             self._max_freq -= 1
-        if self._max_freq <= 0:
-            return None
-        bucket = self._buckets[self._max_freq]
-        # Deterministic tie-break identical to the previous (-freq, p[0]+p[1],
-        # p) heap ordering: among equal frequencies, the smaller concat string
-        # wins, then the lexicographically smaller pair tuple.
-        best_pair = min(bucket, key=lambda p: (p[0] + p[1], p))
-        bucket.remove(best_pair)
-        self._counts.pop(best_pair, None)
-        return best_pair
+        return None
 
     def get_count(self, pair: Tuple[str, str]) -> int:
         """Current frequency of ``pair`` (0 when absent)."""
