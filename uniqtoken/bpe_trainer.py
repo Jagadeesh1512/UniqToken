@@ -7,6 +7,80 @@ from .bpe_model import BPEModel
 from .byte_codec import ByteFallbackEngine
 
 
+class FlatBucketQueue:
+    """Integer-frequency priority queue (Dial's flat buckets) for BPE pairs.
+
+    Pairs are stored in buckets indexed by their current count: inserting or
+    moving a pair between buckets is O(1) (two set operations) compared to
+    O(log K) for a binary heap, and ``pop_max`` advances a high-water mark
+    pointer instead of scanning. Because a pair's bucket always matches its
+    live count, stale tombstone entries and the "count drifted since push"
+    re-push loop required by the previous heap implementation (Issue #8)
+    cannot occur.
+    """
+
+    def __init__(self) -> None:
+        self._buckets: Dict[int, Set[Tuple[str, str]]] = defaultdict(set)
+        self._counts: Dict[Tuple[str, str], int] = {}
+        self._max_freq: int = 0
+
+    def add(self, pair: Tuple[str, str], freq: int) -> None:
+        """Insert ``pair`` with an initial positive frequency."""
+        if freq <= 0:
+            return
+        self._counts[pair] = freq
+        self._buckets[freq].add(pair)
+        if freq > self._max_freq:
+            self._max_freq = freq
+
+    def update(self, pair: Tuple[str, str], delta: int) -> None:
+        """Adjust ``pair``'s frequency by ``delta``, moving it between buckets.
+
+        Pairs whose new frequency is zero or negative are dropped entirely, so
+        no stale entries are ever left behind. Updating an unknown pair with a
+        positive delta introduces it; a negative delta is a no-op.
+        """
+        old_freq = self._counts.get(pair, 0)
+        new_freq = old_freq + delta
+        if old_freq > 0:
+            self._buckets[old_freq].discard(pair)
+        if new_freq > 0:
+            self._counts[pair] = new_freq
+            self._buckets[new_freq].add(pair)
+            if new_freq > self._max_freq:
+                self._max_freq = new_freq
+        else:
+            self._counts.pop(pair, None)
+
+    def pop_max(self) -> Optional[Tuple[str, str]]:
+        """Remove and return the pair with the highest frequency, or None."""
+        while self._max_freq > 0 and not self._buckets[self._max_freq]:
+            self._max_freq -= 1
+        if self._max_freq <= 0:
+            return None
+        bucket = self._buckets[self._max_freq]
+        # Deterministic tie-break identical to the previous (-freq, p[0]+p[1],
+        # p) heap ordering: among equal frequencies, the smaller concat string
+        # wins, then the lexicographically smaller pair tuple.
+        best_pair = min(bucket, key=lambda p: (p[0] + p[1], p))
+        bucket.remove(best_pair)
+        self._counts.pop(best_pair, None)
+        return best_pair
+
+    def get_count(self, pair: Tuple[str, str]) -> int:
+        """Current frequency of ``pair`` (0 when absent)."""
+        return self._counts.get(pair, 0)
+
+    def remove(self, pair: Tuple[str, str]) -> None:
+        """Remove ``pair`` from the queue regardless of its frequency."""
+        freq = self._counts.pop(pair, None)
+        if freq and freq in self._buckets:
+            self._buckets[freq].discard(pair)
+
+    def __len__(self) -> int:
+        return len(self._counts)
+
+
 class BPETrainer:
     """
     Byte-Pair Encoding (BPE) Model Trainer.
@@ -64,9 +138,7 @@ class BPETrainer:
         target_size = self.target_vocab_size if self.target_vocab_size is not None else float("inf")
         max_merges = self.num_merges if self.num_merges is not None else float("inf")
 
-        import heapq
-
-        # 2. Inverted index and Max-Heap for O(1) merge extraction
+        # 2. Inverted index and flat-bucket priority queue for O(1) merge extraction
         pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
         pair_to_words: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
 
@@ -77,26 +149,16 @@ class BPETrainer:
                 pair_counts[p] += freq
                 pair_to_words[p].add(word)
 
-        # Build initial max heap (-freq, word_concat, pair)
-        heap = [(-freq, p[0] + p[1], p) for p, freq in pair_counts.items() if freq > 0]
-        heapq.heapify(heap)
+        # Build the initial frequency-bucketed queue. Every pair lives in the
+        # bucket for its current count, so no stale tombstones accumulate.
+        queue = FlatBucketQueue()
+        for p, freq in pair_counts.items():
+            if freq > 0:
+                queue.add(p, freq)
 
         while len(vocab) < target_size and rank < max_merges:
-            best_pair = None
-            while heap:
-                neg_f, _, p = heapq.heappop(heap)
-                cur_f = pair_counts.get(p, 0)
-                if cur_f <= 0:
-                    continue
-                if cur_f != -neg_f:
-                    # Count drifted since entry was pushed; re-insert with current
-                    # frequency so the pair remains an active merge candidate.
-                    heapq.heappush(heap, (-cur_f, p[0] + p[1], p))
-                    continue
-                best_pair = p
-                break
-
-            if best_pair is None or pair_counts[best_pair] < 1:
+            best_pair = queue.pop_max()
+            if best_pair is None or pair_counts.get(best_pair, 0) < 1:
                 break
 
             new_token = best_pair[0] + best_pair[1]
@@ -127,6 +189,7 @@ class BPETrainer:
                     if pair_counts[p] <= 0:
                         pair_counts.pop(p, None)
                     pair_to_words[p].discard(word)
+                    queue.update(p, -freq)
 
                 # Form new symbols
                 new_syms: List[str] = []
@@ -145,7 +208,7 @@ class BPETrainer:
                     p = (new_syms[i], new_syms[i + 1])
                     pair_counts[p] += freq
                     pair_to_words[p].add(word)
-                    heapq.heappush(heap, (-pair_counts[p], p[0] + p[1], p))
+                    queue.update(p, +freq)
 
             pair_counts.pop(best_pair, None)
             pair_to_words.pop(best_pair, None)
