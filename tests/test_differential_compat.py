@@ -610,9 +610,13 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
         """Compare adapter vs reference IDs for the given sample, skipping strings with special tokens."""
         adapter, tmpdir = _load_adapter_from_hf(hf_tok)
         try:
-            ref_added = set(getattr(hf_tok, "added_tokens_decoder", {}).values())
-            ref_added |= set(getattr(hf_tok, "additional_special_tokens", []) or [])
-            special_strings = set(adapter.special_tokens.keys()) | ref_added
+            special_strings: set[str] = {str(k) for k in adapter.special_tokens.keys()}
+            for tok in getattr(hf_tok, "all_special_tokens", []) or []:
+                special_strings.add(str(tok))
+            for tok in getattr(hf_tok, "additional_special_tokens", []) or []:
+                special_strings.add(str(tok))
+            for tok in (getattr(hf_tok, "added_tokens_decoder", {}) or {}).values():
+                special_strings.add(str(getattr(tok, "content", tok)))
             failures: List[str] = []
             for i, text in enumerate(self.corpus[:sample_size]):
                 if not text or any(s in text for s in special_strings):

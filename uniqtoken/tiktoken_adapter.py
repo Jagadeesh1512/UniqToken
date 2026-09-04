@@ -20,7 +20,11 @@ except ImportError:  # pragma: no cover
 TIKTOKEN_PATTERNS: Dict[str, str] = {
     "gpt2": r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""",
     "cl100k_base": r"""(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+""",
-    "o200k_base": r"""[^\r\n\p{L}\p{N}]?+[\p{Lu}\p{Lt}]*\p{L}+(?i:(?:'t|'re|'ve|'m|'ll|'d))|[^\r\n\p{L}\p{N}]?+[\p{Lu}\p{Lt}]+(?i:(?:'t|'re|'ve|'m|'ll|'d))?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+""",
+    "o200k_base": (
+        r"""[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"""
+        r"""|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"""
+        r"""|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"""
+    ),
 }
 
 
