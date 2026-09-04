@@ -486,7 +486,7 @@ class TiktokenDifferentialTests(unittest.TestCase):
                 cls._o200k_path,
                 name="o200k_base",
                 pattern="o200k_base",
-                special_tokens={},
+                special_tokens=getattr(cls.ref_o200k, "_special_tokens", {}),
                 explicit_n_vocab=cls.ref_o200k.n_vocab,
             )
         else:
@@ -532,6 +532,17 @@ class TiktokenDifferentialTests(unittest.TestCase):
             self.adapter_cl100k.encode("<|endoftext|>")
         ids = self.adapter_cl100k.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})
         ref_ids = self.ref_cl100k.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})
+        self.assertEqual(ids, ref_ids)
+
+    def test_o200k_special_token_handling(self):
+        """Disallowed special tokens raise ValueError; allowed ones match tiktoken IDs exactly."""
+        if self.adapter_o200k is None:
+            self.skipTest("o200k_base encoding unavailable")
+        special_tok = "<|endoftext|>"
+        with self.assertRaises(ValueError):
+            self.adapter_o200k.encode(special_tok)
+        ids = self.adapter_o200k.encode(special_tok, allowed_special={special_tok})
+        ref_ids = self.ref_o200k.encode(special_tok, allowed_special={special_tok})
         self.assertEqual(ids, ref_ids)
 
     def test_gpt2_encode_parity(self):
@@ -602,6 +613,8 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
         if cls.ref_llama3_hf is None:
             cls.ref_llama3_hf = _try_load_hf_tokenizer("NousResearch/Meta-Llama-3-8B")
         cls.has_llama3 = cls.ref_llama3_hf is not None
+        cls.ref_mistral_hf = _try_load_hf_tokenizer("mistralai/Mistral-7B-v0.1")
+        cls.has_mistral = cls.ref_mistral_hf is not None
         if not cls.has_gpt2 and not cls.has_llama3:
             raise unittest.SkipTest("no HuggingFace tokenizer models available (offline or auth required)")
         cls.corpus = _build_differential_corpus()
@@ -610,16 +623,20 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
         """Compare adapter vs reference IDs for the given sample, skipping strings with special tokens."""
         adapter, tmpdir = _load_adapter_from_hf(hf_tok)
         try:
-            special_strings: set[str] = {str(k) for k in adapter.special_tokens.keys()}
+            special_strings: set[str] = {str(k) for k in adapter.special_tokens.keys() if k}
             for tok in getattr(hf_tok, "all_special_tokens", []) or []:
-                special_strings.add(str(tok))
+                if str(tok):
+                    special_strings.add(str(tok))
             for tok in getattr(hf_tok, "additional_special_tokens", []) or []:
-                special_strings.add(str(tok))
+                if str(tok):
+                    special_strings.add(str(tok))
             for tok in (getattr(hf_tok, "added_tokens_decoder", {}) or {}).values():
-                special_strings.add(str(getattr(tok, "content", tok)))
+                tok_str = str(getattr(tok, "content", tok))
+                if tok_str:
+                    special_strings.add(tok_str)
             failures: List[str] = []
             for i, text in enumerate(self.corpus[:sample_size]):
-                if not text or any(s in text for s in special_strings):
+                if any(s in text for s in special_strings):
                     continue
                 ref_ids = hf_tok.encode(text, add_special_tokens=False)
                 try:
@@ -656,8 +673,6 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
         adapter, tmpdir = _load_adapter_from_hf(self.ref_gpt2_hf)
         try:
             for text in self.corpus[:2000]:
-                if not text:
-                    continue
                 try:
                     ids = adapter.encode(text)
                     roundtrip = adapter.decode(ids)
@@ -674,8 +689,6 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
         adapter, tmpdir = _load_adapter_from_hf(self.ref_llama3_hf)
         try:
             for text in self.corpus[:2000]:
-                if not text:
-                    continue
                 try:
                     ids = adapter.encode(text)
                     roundtrip = adapter.decode(ids)
