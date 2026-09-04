@@ -311,6 +311,7 @@ def _build_differential_corpus() -> List[str]:
 
 
 def _synthetic_ranks_path() -> str:
+    """Build a self-contained synthetic ranks file via the existing test fixture helper."""
     import importlib
 
     mod = importlib.import_module("tests.test_tiktoken_adapter")
@@ -318,6 +319,7 @@ def _synthetic_ranks_path() -> str:
 
 
 def _try_import(module_name: str) -> Optional[Any]:
+    """Import a module by name, returning None on any ImportError (defensive for optional deps)."""
     try:
         return __import__(module_name)
     except Exception:
@@ -325,6 +327,7 @@ def _try_import(module_name: str) -> Optional[Any]:
 
 
 def _try_load_hf_tokenizer(model_id: str, use_fast: bool = True) -> Optional[Any]:
+    """Try to load a HuggingFace tokenizer by ID; return None if transformers is missing or the model is unreachable."""
     transformers = _try_import("transformers")
     if transformers is None:
         return None
@@ -335,6 +338,7 @@ def _try_load_hf_tokenizer(model_id: str, use_fast: bool = True) -> Optional[Any
 
 
 def _load_adapter_from_hf(hf_tokenizer: Any) -> Tuple[Any, str]:
+    """Dump the HF tokenizer to a temp JSON file and import it via UniqToken; return (adapter, tmpdir)."""
     from uniqtoken.hf_importer import import_hf_tokenizer
 
     tokenizer_json = hf_tokenizer.backend_tokenizer.to_str()
@@ -353,15 +357,18 @@ class SyntheticFallbackTests(unittest.TestCase):
     """Always-runnable synthetic tests (no external packages required)."""
 
     def test_corpus_size_is_50000(self):
+        """Assert the deterministic corpus generator produces exactly 50,000 strings."""
         corpus = _build_differential_corpus()
         self.assertEqual(len(corpus), CORPUS_SIZE, f"expected {CORPUS_SIZE}, got {len(corpus)}")
 
     def test_corpus_is_deterministic(self):
+        """Assert the corpus generator is fully deterministic across invocations."""
         a = _build_differential_corpus()
         b = _build_differential_corpus()
         self.assertEqual(a, b, "corpus must be deterministic across calls")
 
     def test_corpus_contains_required_categories(self):
+        """Assert the corpus covers empty, Unicode, emoji, and whitespace-only strings."""
         corpus = _build_differential_corpus()
         self.assertTrue(any(s == "" for s in corpus), "missing empty strings")
         self.assertTrue(
@@ -378,6 +385,7 @@ class SyntheticFallbackTests(unittest.TestCase):
         )
 
     def test_synthetic_tiktoken_roundtrip(self):
+        """Verify the synthetic ranks adapter round-trips simple text via the cl100k_base pattern."""
         try:
             import regex  # noqa: F401
         except ImportError:
@@ -404,15 +412,18 @@ class SyntheticFallbackTests(unittest.TestCase):
 
 
 class TiktokenDifferentialTests(unittest.TestCase):
-    """Differential tests against OpenAI tiktoken for cl100k_base and gpt2."""
+    """Differential parity tests against OpenAI tiktoken for cl100k_base, o200k_base, and gpt2."""
 
     ref_cl100k: Any
+    ref_o200k: Any
     ref_gpt2: Any
     adapter_cl100k: Any
+    adapter_o200k: Any
     adapter_gpt2: Any
     corpus: List[str]
     _tmpdir: str
     _cl100k_path: str
+    _o200k_path: str
     _gpt2_path: str
 
     @classmethod
@@ -461,6 +472,25 @@ class TiktokenDifferentialTests(unittest.TestCase):
             )
         else:
             cls.adapter_gpt2 = None
+
+        try:
+            cls.ref_o200k = tiktoken.get_encoding("o200k_base")
+        except Exception:
+            cls.ref_o200k = None
+        if cls.ref_o200k is not None:
+            cls._o200k_path = os.path.join(cls._tmpdir, "o200k_base.tiktoken")
+            with open(cls._o200k_path, "w", encoding="utf-8") as f:
+                for token_bytes, rank in sorted(cls.ref_o200k._mergeable_ranks.items(), key=lambda x: x[1]):
+                    f.write(f"{base64.b64encode(token_bytes).decode()} {rank}\n")
+            cls.adapter_o200k = TiktokenEncoding.from_file(
+                cls._o200k_path,
+                name="o200k_base",
+                pattern="o200k_base",
+                special_tokens={},
+                explicit_n_vocab=cls.ref_o200k.n_vocab,
+            )
+        else:
+            cls.adapter_o200k = None
         cls.corpus = _build_differential_corpus()
 
     @classmethod
@@ -469,8 +499,12 @@ class TiktokenDifferentialTests(unittest.TestCase):
             shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
     def test_cl100k_encode_parity_full_corpus(self):
+        """Bit-for-bit ID parity against tiktoken cl100k_base across the full 50k corpus."""
+        ref_specials = set(self.ref_cl100k._special_tokens)
         failures: List[str] = []
         for i, text in enumerate(self.corpus):
+            if any(s in text for s in ref_specials):
+                continue
             try:
                 ref_ids = self.ref_cl100k.encode(text, allowed_special=set())
             except Exception:
@@ -481,6 +515,7 @@ class TiktokenDifferentialTests(unittest.TestCase):
         self.assertEqual(len(failures), 0, f"{len(failures)} cl100k encode mismatches:\n" + "\n".join(failures[:20]))
 
     def test_cl100k_decode_parity(self):
+        """Decode parity vs tiktoken cl100k_base on a 5k subset."""
         sample = self.corpus[:5000]
         for text in sample:
             try:
@@ -492,17 +527,23 @@ class TiktokenDifferentialTests(unittest.TestCase):
             self.assertEqual(adapter_decoded, ref_decoded, f"decode mismatch on {text[:60]!r}")
 
     def test_cl100k_special_token_handling(self):
+        """Disallowed special tokens raise ValueError; allowed ones match tiktoken IDs exactly."""
         with self.assertRaises(ValueError):
             self.adapter_cl100k.encode("<|endoftext|>")
         ids = self.adapter_cl100k.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})
-        self.assertIn(100257, ids)
+        ref_ids = self.ref_cl100k.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})
+        self.assertEqual(ids, ref_ids)
 
     def test_gpt2_encode_parity(self):
+        """Bit-for-bit ID parity against tiktoken gpt2 across the full 50k corpus."""
         if self.adapter_gpt2 is None:
             self.skipTest("gpt2 encoding unavailable")
-        sample = self.corpus[:10_000]
+        sample = self.corpus[:CORPUS_SIZE]
+        ref_specials = set(self.ref_gpt2._special_tokens)
         failures: List[str] = []
         for i, text in enumerate(sample):
+            if any(s in text for s in ref_specials):
+                continue
             try:
                 ref_ids = self.ref_gpt2.encode(text, allowed_special=set())
             except Exception:
@@ -512,7 +553,26 @@ class TiktokenDifferentialTests(unittest.TestCase):
                 failures.append(f"[{i}] {text[:60]!r}")
         self.assertEqual(len(failures), 0, f"{len(failures)} gpt2 mismatches:\n" + "\n".join(failures[:20]))
 
+    def test_o200k_encode_parity(self):
+        """Bit-for-bit ID parity against tiktoken o200k_base across the full 50k corpus."""
+        if self.adapter_o200k is None:
+            self.skipTest("o200k_base encoding unavailable")
+        ref_specials = set(self.ref_o200k._special_tokens)
+        failures: List[str] = []
+        for i, text in enumerate(self.corpus):
+            if any(s in text for s in ref_specials):
+                continue
+            try:
+                ref_ids = self.ref_o200k.encode(text, allowed_special=set())
+            except Exception:
+                continue
+            adapter_ids = self.adapter_o200k.encode(text, allowed_special=set())
+            if adapter_ids != ref_ids:
+                failures.append(f"[{i}] {text[:60]!r}: adapter={adapter_ids[:5]}... ref={ref_ids[:5]}...")
+        self.assertEqual(len(failures), 0, f"{len(failures)} o200k mismatches:\n" + "\n".join(failures[:20]))
+
     def test_performance_under_10s(self):
+        """Assert encoding the full 50k corpus completes within 10 seconds."""
         start = time.time()
         for text in self.corpus:
             try:
@@ -524,13 +584,15 @@ class TiktokenDifferentialTests(unittest.TestCase):
 
 
 class HuggingFaceDifferentialTests(unittest.TestCase):
-    """Differential tests against HuggingFace ByteLevel BPE (GPT-2 and LLaMA-3)."""
+    """Differential parity tests against HuggingFace ByteLevel BPE (GPT-2, LLaMA-3, Mistral)."""
 
     ref_gpt2_hf: Any
     ref_llama3_hf: Any
+    ref_mistral_hf: Any
     corpus: List[str]
     has_gpt2: bool
     has_llama3: bool
+    has_mistral: bool
 
     @classmethod
     def setUpClass(cls):
@@ -545,11 +607,15 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
         cls.corpus = _build_differential_corpus()
 
     def _check_parity(self, name: str, hf_tok: Any, sample_size: int) -> None:
+        """Compare adapter vs reference IDs for the given sample, skipping strings with special tokens."""
         adapter, tmpdir = _load_adapter_from_hf(hf_tok)
         try:
+            ref_added = set(getattr(hf_tok, "added_tokens_decoder", {}).values())
+            ref_added |= set(getattr(hf_tok, "additional_special_tokens", []) or [])
+            special_strings = set(adapter.special_tokens.keys()) | ref_added
             failures: List[str] = []
             for i, text in enumerate(self.corpus[:sample_size]):
-                if not text:
+                if not text or any(s in text for s in special_strings):
                     continue
                 ref_ids = hf_tok.encode(text, add_special_tokens=False)
                 try:
@@ -568,16 +634,19 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_gpt2_hf_encode_parity(self):
+        """Bit-for-bit ID parity against HF GPT-2 ByteLevel BPE across the full 50k corpus."""
         if not self.has_gpt2:
             self.skipTest("GPT-2 HF model unavailable")
         self._check_parity("GPT-2", self.ref_gpt2_hf, sample_size=CORPUS_SIZE)
 
     def test_llama3_bpe_encode_parity(self):
+        """Bit-for-bit ID parity against HF LLaMA-3 BPE across the full 50k corpus."""
         if not self.has_llama3:
             self.skipTest("LLaMA-3 HF model unavailable")
         self._check_parity("LLaMA-3", self.ref_llama3_hf, sample_size=CORPUS_SIZE)
 
     def test_gpt2_hf_roundtrip(self):
+        """Assert GPT-2 adapter round-trips losslessly on a 2k subset."""
         if not self.has_gpt2:
             self.skipTest("GPT-2 HF model unavailable")
         adapter, tmpdir = _load_adapter_from_hf(self.ref_gpt2_hf)
@@ -588,13 +657,14 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
                 try:
                     ids = adapter.encode(text)
                     roundtrip = adapter.decode(ids)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    self.fail(f"roundtrip raised for {text[:60]!r}: {exc}")
                 self.assertEqual(roundtrip, text, f"GPT-2 roundtrip failed on {text[:60]!r}")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_llama3_bpe_roundtrip(self):
+        """Assert LLaMA-3 adapter round-trips losslessly on a 2k subset."""
         if not self.has_llama3:
             self.skipTest("LLaMA-3 HF model unavailable")
         adapter, tmpdir = _load_adapter_from_hf(self.ref_llama3_hf)
@@ -605,11 +675,17 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
                 try:
                     ids = adapter.encode(text)
                     roundtrip = adapter.decode(ids)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    self.fail(f"roundtrip raised for {text[:60]!r}: {exc}")
                 self.assertEqual(roundtrip, text, f"LLaMA-3 roundtrip failed on {text[:60]!r}")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_mistral_bpe_encode_parity(self):
+        """Bit-for-bit ID parity against HF Mistral ByteLevel BPE; skip if offline or gated."""
+        if not self.has_mistral:
+            self.skipTest("Mistral HF model unavailable (offline or auth required)")
+        self._check_parity("Mistral", self.ref_mistral_hf, sample_size=CORPUS_SIZE)
 
 
 if __name__ == "__main__":

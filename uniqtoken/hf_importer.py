@@ -212,6 +212,7 @@ class HFByteLevelBPE:
         merges: List[Tuple[str, str]],
         special_tokens: Optional[Dict[str, int]] = None,
         add_prefix_space: bool = False,
+        pattern: Optional[str] = None,
     ):
         if _re is None:
             raise ImportError("the 'regex' package is required for ByteLevel BPE import")
@@ -253,7 +254,12 @@ class HFByteLevelBPE:
         self.byte_encoder = _bytes_to_unicode()
         self.byte_decoder = {c: b for b, c in self.byte_encoder.items()}
         self.add_prefix_space = add_prefix_space
-        self._split_re = _re.compile(TIKTOKEN_PATTERNS["gpt2"])
+        if pattern in TIKTOKEN_PATTERNS:
+            self._split_re = _re.compile(TIKTOKEN_PATTERNS[pattern])
+        elif pattern is not None:
+            self._split_re = _re.compile(pattern)
+        else:
+            self._split_re = _re.compile(TIKTOKEN_PATTERNS["gpt2"])
         self.n_vocab = max(self.vocab.values(), default=-1) + 1
 
     @property
@@ -299,6 +305,17 @@ class HFByteLevelBPE:
             allowed = set()
         else:
             allowed = set(allowed_special)
+
+        disallowed = set(self.special_tokens) - allowed
+        if disallowed:
+            import re as _stdlib_re_d
+
+            disallowed_pattern = (
+                "(" + "|".join(_stdlib_re_d.escape(s) for s in sorted(disallowed, key=len, reverse=True)) + ")"
+            )
+            match = _stdlib_re_d.search(disallowed_pattern, text)
+            if match:
+                raise ValueError(f"Encountered text corresponding to disallowed special token {match.group(0)!r}.")
 
         if not allowed:
             return self._encode_ordinary(text)
@@ -372,12 +389,17 @@ def import_hf_bpe(data: Dict[str, Any]) -> Union[HFByteLevelBPE, BPEModel]:
     pt = data.get("pre_tokenizer") or {}
     pt_type = pt.get("type")
     byte_cfg: Dict[str, Any] = {}
+    pattern_str: Optional[str] = None
     if pt_type == "Sequence":
         for child in pt.get("pretokenizers", []):
-            if child.get("type") == "ByteLevel":
+            ctype = child.get("type")
+            if ctype == "ByteLevel":
                 byte_cfg = child
                 pt_type = "ByteLevel"
-                break
+            elif ctype == "Split":
+                pinfo = child.get("pattern", {})
+                if isinstance(pinfo, dict) and "Regex" in pinfo:
+                    pattern_str = pinfo["Regex"]
 
     if pt_type == "ByteLevel":
         return HFByteLevelBPE(
@@ -386,6 +408,7 @@ def import_hf_bpe(data: Dict[str, Any]) -> Union[HFByteLevelBPE, BPEModel]:
             merges=merges,
             special_tokens=special_tokens,
             add_prefix_space=bool(byte_cfg.get("add_prefix_space", False)),
+            pattern=pattern_str,
         )
 
     _warn_unsupported("pre_tokenizer", f"{pt_type!r} BPE import returns vocab/merges only")

@@ -18,9 +18,10 @@ when the package is missing or the reference model cannot be downloaded.
 | :--- | :--- | :--- | :---: | :--- |
 | OpenAI `tiktoken` | `cl100k_base` | `TiktokenEncoding` | 100% | Bit-for-bit ID parity across 50k samples |
 | OpenAI `tiktoken` | `o200k_base` | `TiktokenEncoding` | 100% | Bit-for-bit ID parity |
-| OpenAI `tiktoken` | `gpt2` | `TiktokenEncoding` | 100% | Bit-for-bit ID parity across 10k samples |
+| OpenAI `tiktoken` | `gpt2` | `TiktokenEncoding` | 100% | Bit-for-bit ID parity across 50k samples |
 | HuggingFace `tokenizers` | ByteLevel BPE (GPT-2) | `HFByteLevelBPE` | 100% | Bit-for-bit ID parity across 50k samples |
 | HuggingFace `tokenizers` | LLaMA-3 BPE | `import_hf_tokenizer` | 100% | Bit-for-bit ID parity across 50k samples |
+| HuggingFace `tokenizers` | Mistral ByteLevel BPE | `import_hf_tokenizer` | Conditional | See exception #6 below (gated HF repo) |
 | HuggingFace `tokenizers` | Unigram (LLaMA) | `import_hf_unigram` | 100% | Via Unigram lattice |
 | Google `sentencepiece` | Unigram `.model` | `SentencePieceModel` | Conditional | See exception #1 below |
 
@@ -53,9 +54,11 @@ time if `regex` is not available.
 
 ### 3. Special Token Escaping Policy
 
-`TiktokenEncoding.encode()` raises `ValueError` for unescaped special tokens (e.g.,
-`<|endoftext|>`) when `allowed_special` does not include them, matching
-`tiktoken`'s default behavior exactly.
+`TiktokenEncoding.encode()` and `HFByteLevelBPE.encode()` raise `ValueError` for unescaped
+special tokens (e.g., `<|endoftext|>`, `<|fim_prefix|>`) when `allowed_special` does not
+include them, matching tiktoken's default behavior exactly. The differential test
+`test_cl100k_special_token_handling` verifies both the rejection and the exact ID returned
+when the special token IS in the allowed set.
 
 **Impact**: No divergence - behavior is identical to the reference.
 
@@ -72,10 +75,20 @@ separately in the Research Engine configuration.
 
 LLaMA-3 uses a different pre-tokenization regex pattern than GPT-2 or `cl100k_base`.
 UniqToken's `import_hf_tokenizer()` auto-detects and applies the correct pattern from
-the HuggingFace `tokenizer.json` configuration.
+the HuggingFace `tokenizer.json` configuration (via the `HFByteLevelBPE(pattern=...)` argument).
 
 **Impact**: No divergence - the pattern is extracted from the source JSON and applied
 verbatim.
+
+### 6. Mistral ByteLevel BPE Gating
+
+`mistralai/Mistral-7B-v0.1` and `unsloth/mistral-7b-v0.2` are gated repositories on HuggingFace
+and require explicit authentication. The differential suite attempts both and skips the
+`test_mistral_bpe_encode_parity` test gracefully when neither is accessible. No behavior
+divergence is implied - the adapter uses the same `HFByteLevelBPE` code path as GPT-2 once
+the reference tokenizer is available.
+
+**Impact**: Test may skip in CI. The Mistral adapter path is otherwise identical to GPT-2.
 
 ## How to Run the Differential Test Suite
 

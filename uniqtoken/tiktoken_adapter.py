@@ -167,6 +167,15 @@ class TiktokenEncoding:
         else:
             allowed = set(allowed_special)
 
+        disallowed = set(self.special_tokens) - allowed
+        if disallowed:
+            disallowed_pattern = (
+                "(" + "|".join(_stdlib_re.escape(s) for s in sorted(disallowed, key=len, reverse=True)) + ")"
+            )
+            match = _stdlib_re.search(disallowed_pattern, text)
+            if match:
+                raise ValueError(f"Encountered text corresponding to disallowed special token {match.group(0)!r}.")
+
         if not allowed:
             return self._encode_ordinary(text)
 
