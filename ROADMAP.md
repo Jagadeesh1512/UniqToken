@@ -72,21 +72,21 @@ Contributors and maintainers can pick up tasks from the structured queue below. 
 - [ ] **[#33](https://github.com/umran666/UniqToken/issues/33)** [P1-high] Zero-copy PyBuffer borrowing in Rust batch encoder.
 
 ### Stage 5: Hugging Face Ecosystem Integration
-- [ ] **[#45](https://github.com/umran666/UniqToken/issues/45)** [P1-high] Implement native uniqtoken.hf.UniqTokenizer matching PreTrainedTokenizerFast conventions with public compatibility matrix.
-- [ ] **[#44](https://github.com/umran666/UniqToken/issues/44)** [P1-high] Jinja2 chat template engine and pply_chat_template API.
-- [ ] **[#24](https://github.com/umran666/UniqToken/issues/24)** [P2-medium] Direct push_to_hub() publishing utility.
+- [ ] **[#45](https://github.com/umran666/UniqToken/issues/45)** `[P1-high]` Implement native `uniqtoken.hf.UniqTokenizer` matching `PreTrainedTokenizerFast` conventions with public compatibility matrix.
+- [ ] **[#44](https://github.com/umran666/UniqToken/issues/44)** `[P1-high]` Jinja2 chat template engine and `apply_chat_template` API. (PR #53 in review)
+- [x] **[#24](https://github.com/umran666/UniqToken/issues/24)** `[P2-medium]` Direct `push_to_hub()` publishing utility. (Resolved in PR #54)
 
 ### Stage 6: Inference Serving Engine Hooks
-- [ ] **[#52](https://github.com/umran666/UniqToken/issues/52)** [P1-high] GGUF vocabulary table loader and C++ tokenization hook for llama.cpp.
-- [ ] **[#27](https://github.com/umran666/UniqToken/issues/27)** [P1-high] vLLM custom tokenizer backend plugin and streaming worker.
+- [ ] **[#52](https://github.com/umran666/UniqToken/issues/52)** `[P1-high]` GGUF vocabulary table loader and C++ tokenization hook for `llama.cpp`.
+- [ ] **[#27](https://github.com/umran666/UniqToken/issues/27)** `[P1-high]` vLLM custom tokenizer backend plugin and streaming worker.
 
 ### Stage 7: Large-Scale Training Infrastructure
-- [ ] **[#47](https://github.com/umran666/UniqToken/issues/47)** [P1-high] Disk-backed external chunk counter for TB-scale out-of-core training.
-- [ ] **[#48](https://github.com/umran666/UniqToken/issues/48)** [P2-medium] SuperBPE Subword Regularization and BPE Dropout.
+- [ ] **[#47](https://github.com/umran666/UniqToken/issues/47)** `[P1-high]` Disk-backed external chunk counter for TB-scale out-of-core training.
+- [x] **[#48](https://github.com/umran666/UniqToken/issues/48)** `[P2-medium]` SuperBPE Subword Regularization and BPE Dropout. (Resolved in PR #55)
 
 ### Stage 8: Scientific Evaluation & Research Publication
-- [ ] **[#23](https://github.com/umran666/UniqToken/issues/23)** [P2-medium] Expand evaluation corpora with low-resource African and Indic languages.
-- [ ] **[#25](https://github.com/umran666/UniqToken/issues/25)** [P2-medium] Interactive terminal comparison CLI tool (uniqtoken compare).
+- [ ] **[#23](https://github.com/umran666/UniqToken/issues/23)** `[P2-medium]` Expand evaluation corpora with low-resource African and Indic languages.
+- [x] **[#25](https://github.com/umran666/UniqToken/issues/25)** `[P2-medium]` Interactive terminal comparison CLI tool (`uniqtoken compare`). (Resolved in PR #56)
 
 ---
 
