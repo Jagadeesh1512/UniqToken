@@ -1,4 +1,9 @@
+#![cfg(feature = "python")]
+//! Seed n-gram mining for vocabulary construction (Python bindings only).
+
+use crate::error::CoreResult;
 use ahash::AHashMap;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -47,13 +52,14 @@ fn max_ngram_for_chunk(chunk: &str, default_max: usize) -> usize {
     }
 }
 
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (chunk_counts, max_ngram_length, special_tokens=None))]
 pub fn rust_mine_ngrams(
     chunk_counts: HashMap<String, usize>,
     max_ngram_length: usize,
     special_tokens: Option<HashSet<String>>,
-) -> PyResult<HashMap<String, usize>> {
+) -> CoreResult<HashMap<String, usize>> {
     let specials = special_tokens.unwrap_or_default();
     let mut ngram_counts: AHashMap<String, usize> = AHashMap::with_capacity(chunk_counts.len() * 8);
     for (chunk, freq) in chunk_counts {
