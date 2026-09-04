@@ -1,4 +1,4 @@
-﻿"""Tests for the flat bucket queue BPE training implementation (Issue #35).
+"""Tests for the flat bucket queue BPE training implementation (Issue #35).
 
 Replaces the lazy binary-heap pair priority structure in ``BPETrainer`` with
 a Dial's-algorithm flat bucket queue. The parity tests re-run the previous
@@ -27,7 +27,6 @@ class FlatBucketQueueTests(unittest.TestCase):
         self.assertEqual(queue.get_count(("b", "c")), 5)
         self.assertEqual(len(queue), 2)
         self.assertEqual(queue.get_count(("c", "d")), 0)
-
 
     def test_add_duplicate_overwrites_bucket_membership(self):
         """Calling add() twice for the same pair must overwrite cleanly and pop once."""
