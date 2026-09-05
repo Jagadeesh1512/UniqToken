@@ -131,21 +131,37 @@ class TestBinaryMmapModel(unittest.TestCase):
             sparse_tok.save(tmp_path, save_binary=True)
             self.assertTrue((tmp_path / "tokenizer.json").is_file())
             self.assertFalse((tmp_path / "tokenizer.uniqtok").exists())
+            # Verify the resulting JSON was actually overwritten with the sparse model
+            loaded_sparse = CustomTokenizer.load(tmp_path)
+            self.assertEqual(loaded_sparse.model.token_to_id, {"a": 0, "b": 5})
 
     def test_invalid_offsets_raise(self):
         """Verifies binary loader rejects invalid section offsets and out-of-bounds token offsets."""
         import struct
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = Path(tmpdir) / "corrupt_offsets.uniqtok"
-            export_binary(self.tokenizer, bin_path)
-            # Corrupt scores_offset in header (u64 field at byte 32:
+            # Case 1: Corrupt scores_offset in header (u64 field at byte 32:
             # 8 magic + 4xI version/flags/vocab/maxlen + Q space_codepoint).
+            bin_path = Path(tmpdir) / "corrupt_section_offset.uniqtok"
+            export_binary(self.tokenizer, bin_path)
             with open(bin_path, "r+b") as f:
                 f.seek(32)
                 f.write(struct.pack("<Q", 999999))
             with self.assertRaises(ValueError):
                 load_binary(bin_path, use_mmap=True)
+            # Case 2: Corrupt token offset entry in offsets table to point outside string section
+            bin_path2 = Path(tmpdir) / "corrupt_token_offset.uniqtok"
+            export_binary(self.tokenizer, bin_path2)
+            with open(bin_path2, "r+b") as f:
+                # Read offsets_offset from header (byte 40)
+                f.seek(40)
+                (offsets_offset,) = struct.unpack("<Q", f.read(8))
+                f.seek(offsets_offset)
+                f.write(struct.pack("<II", 999999, 10))
+            with self.assertRaises(ValueError):
+                load_binary(bin_path2, use_mmap=True)
+            with self.assertRaises(ValueError):
+                load_binary(bin_path2, use_mmap=False)
 
 
 if __name__ == "__main__":
