@@ -869,7 +869,8 @@ class CustomTokenizer:
             ),
         )
 
-    def save(self, directory: Union[str, Path]) -> None:
+    def save(self, directory: Union[str, Path], save_binary: bool = True) -> None:
+        """Saves tokenizer configuration and vocabulary. Automatically generates .uniqtok binary format."""
         dir_path = Path(directory)
         dir_path.mkdir(parents=True, exist_ok=True)
 
@@ -907,10 +908,26 @@ class CustomTokenizer:
 
         with open(dir_path / "tokenizer.json", "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
+        if save_binary:
+            from uniqtoken.binary_format import export_binary
+
+            export_binary(self, dir_path / "tokenizer.uniqtok")
 
     @classmethod
-    def load(cls, directory: Union[str, Path]) -> CustomTokenizer:
+    def load(cls, directory: Union[str, Path], prefer_binary: bool = True) -> CustomTokenizer:
+        """Loads a CustomTokenizer. Prefers zero-copy .uniqtok format for sub-millisecond cold starts."""
         dir_path = Path(directory)
+        binary_file = dir_path / "tokenizer.uniqtok"
+
+        if prefer_binary and binary_file.is_file():
+            try:
+                from uniqtoken.binary_format import load_binary
+
+                return load_binary(binary_file, use_mmap=True)
+            except Exception:
+                # Safe fallback to standard JSON on any binary load issue
+                pass
+
         with open(dir_path / "tokenizer.json", "r", encoding="utf-8") as f:
             config = json.load(f)
 
