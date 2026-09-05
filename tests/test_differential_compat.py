@@ -322,7 +322,7 @@ def _try_import(module_name: str) -> Optional[Any]:
     """Import a module by name, returning None on any ImportError (defensive for optional deps)."""
     try:
         return __import__(module_name)
-    except Exception:
+    except ImportError:
         return None
 
 
@@ -586,13 +586,9 @@ class TiktokenDifferentialTests(unittest.TestCase):
         self.assertEqual(len(failures), 0, f"{len(failures)} o200k mismatches:\n" + "\n".join(failures[:20]))
 
     def test_performance_50k_benchmark(self):
-        """CI performance guard: the full 50k corpus must encode within 30 s on shared 2-vCPU runners.
-
-        The original PR objective was 10 s on a local desktop. GitHub Actions
-        2-vCPU VMs take 11–18 s, so the CI gate is intentionally relaxed to
-        30 s to prevent flaky failures while still catching true regressions.
-        See CodeRabbit discussion r3933748501.
-        """
+        """Assert 50k corpus encodes under 10s locally, or 30s in CI shared runners."""
+        is_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+        limit = 30.0 if is_ci else 10.0
         start = time.time()
         for text in self.corpus:
             try:
@@ -600,33 +596,37 @@ class TiktokenDifferentialTests(unittest.TestCase):
             except ValueError:
                 continue
         elapsed = time.time() - start
-        self.assertLess(elapsed, 30.0, f"50k encode took {elapsed:.2f}s (limit: 30s)")
+        self.assertLess(
+            elapsed,
+            limit,
+            f"50k encode took {elapsed:.2f}s (limit: {limit:.0f}s, is_ci={is_ci})",
+        )
 
 
 class HuggingFaceDifferentialTests(unittest.TestCase):
     """Differential parity tests against HuggingFace ByteLevel BPE (GPT-2, LLaMA-3, Mistral)."""
 
-    ref_gpt2_hf: Any
-    ref_llama3_hf: Any
-    ref_mistral_hf: Any
+    _hf_cache: dict = {}
     corpus: List[str]
-    has_gpt2: bool
-    has_llama3: bool
-    has_mistral: bool
 
     @classmethod
     def setUpClass(cls):
-        cls.ref_gpt2_hf = _try_load_hf_tokenizer("openai-community/gpt2")
-        cls.has_gpt2 = cls.ref_gpt2_hf is not None
-        cls.ref_llama3_hf = _try_load_hf_tokenizer("meta-llama/Meta-Llama-3-8B")
-        if cls.ref_llama3_hf is None:
-            cls.ref_llama3_hf = _try_load_hf_tokenizer("NousResearch/Meta-Llama-3-8B")
-        cls.has_llama3 = cls.ref_llama3_hf is not None
-        cls.ref_mistral_hf = _try_load_hf_tokenizer("mistralai/Mistral-7B-v0.1")
-        cls.has_mistral = cls.ref_mistral_hf is not None
-        if not cls.has_gpt2 and not cls.has_llama3:
-            raise unittest.SkipTest("no HuggingFace tokenizer models available (offline or auth required)")
         cls.corpus = _build_differential_corpus()
+
+    @classmethod
+    def get_tokenizer(cls, model_id: str) -> Optional[Any]:
+        """Fetch an HF tokenizer by ID, caching per model so each downloads at most once."""
+        if model_id not in cls._hf_cache:
+            cls._hf_cache[model_id] = _try_load_hf_tokenizer(model_id)
+        return cls._hf_cache[model_id]
+
+    @classmethod
+    def get_llama3_tokenizer(cls) -> Optional[Any]:
+        """Fetch LLaMA-3, preferring the gated repo with the public mirror as fallback."""
+        tok = cls.get_tokenizer("meta-llama/Meta-Llama-3-8B")
+        if tok is None:
+            tok = cls.get_tokenizer("NousResearch/Meta-Llama-3-8B")
+        return tok
 
     def _check_parity(self, name: str, hf_tok: Any, sample_size: int) -> None:
         """Compare adapter vs reference IDs for the given sample, skipping strings with special tokens."""
@@ -676,7 +676,7 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
             if name == "LLaMA-3" and 0 < len(failures) <= 12:
                 # Only relax if the failures are exactly the known Vietnamese set.
                 known = all("Vi" in f or "Tiếng" in f or "p\u0159" in f or "\ufffd" in f for f in failures)
-                if known or len(failures) <= 12:
+                if known and len(failures) <= 12:
                     import warnings
 
                     warnings.warn(
@@ -694,21 +694,24 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
 
     def test_gpt2_hf_encode_parity(self):
         """Bit-for-bit ID parity against HF GPT-2 ByteLevel BPE across the full 50k corpus."""
-        if not self.has_gpt2:
+        tok = self.get_tokenizer("openai-community/gpt2")
+        if tok is None:
             self.skipTest("GPT-2 HF model unavailable")
-        self._check_parity("GPT-2", self.ref_gpt2_hf, sample_size=CORPUS_SIZE)
+        self._check_parity("GPT-2", tok, sample_size=CORPUS_SIZE)
 
     def test_llama3_bpe_encode_parity(self):
         """Bit-for-bit ID parity against HF LLaMA-3 BPE across the full 50k corpus."""
-        if not self.has_llama3:
+        tok = self.get_llama3_tokenizer()
+        if tok is None:
             self.skipTest("LLaMA-3 HF model unavailable")
-        self._check_parity("LLaMA-3", self.ref_llama3_hf, sample_size=CORPUS_SIZE)
+        self._check_parity("LLaMA-3", tok, sample_size=CORPUS_SIZE)
 
     def test_gpt2_hf_roundtrip(self):
         """Assert GPT-2 adapter round-trips losslessly on a 2k subset."""
-        if not self.has_gpt2:
+        tok = self.get_tokenizer("openai-community/gpt2")
+        if tok is None:
             self.skipTest("GPT-2 HF model unavailable")
-        adapter, tmpdir = _load_adapter_from_hf(self.ref_gpt2_hf)
+        adapter, tmpdir = _load_adapter_from_hf(tok)
         try:
             for text in self.corpus[:2000]:
                 try:
@@ -722,9 +725,10 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
 
     def test_llama3_bpe_roundtrip(self):
         """Assert LLaMA-3 adapter round-trips losslessly on a 2k subset."""
-        if not self.has_llama3:
+        tok = self.get_llama3_tokenizer()
+        if tok is None:
             self.skipTest("LLaMA-3 HF model unavailable")
-        adapter, tmpdir = _load_adapter_from_hf(self.ref_llama3_hf)
+        adapter, tmpdir = _load_adapter_from_hf(tok)
         try:
             for text in self.corpus[:2000]:
                 try:
@@ -738,9 +742,10 @@ class HuggingFaceDifferentialTests(unittest.TestCase):
 
     def test_mistral_bpe_encode_parity(self):
         """Bit-for-bit ID parity against HF Mistral ByteLevel BPE; skip if offline or gated."""
-        if not self.has_mistral:
+        tok = self.get_tokenizer("mistralai/Mistral-7B-v0.1")
+        if tok is None:
             self.skipTest("Mistral HF model unavailable (offline or auth required)")
-        self._check_parity("Mistral", self.ref_mistral_hf, sample_size=CORPUS_SIZE)
+        self._check_parity("Mistral", tok, sample_size=CORPUS_SIZE)
 
 
 if __name__ == "__main__":

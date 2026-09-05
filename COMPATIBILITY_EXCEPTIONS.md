@@ -104,8 +104,9 @@ Vietnamese byte-level merges (`ĠV`+`i` vs `á»`+`ĩ`). This is a known 0.016%
 divergence and is tolerated in `HuggingFaceDifferentialTests` with a warning;
 the 50k parity gate otherwise remains 100% for GPT-2 and for tiktoken (see #5).
 
-**Impact**: `test_llama3_bpe_encode_parity` allows ≤12 mismatches with a
-`UserWarning`; strict byte-level parity is otherwise maintained.
+**Impact**: `test_llama3_bpe_encode_parity` only permits mismatches strictly
+matching the known Vietnamese/Czech merge tie-break set (up to 12 strings) with
+a `UserWarning`; any other mismatch fails the test immediately.
 
 ## How to Run the Differential Test Suite
 

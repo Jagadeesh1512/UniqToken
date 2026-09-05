@@ -306,15 +306,17 @@ class HFByteLevelBPE:
         else:
             allowed = set(allowed_special)
 
-        if self.special_tokens:
-            import re as _stdlib_re_d
+        disallowed = set(self.special_tokens) - allowed
+        if disallowed:
+            import re as _stdlib_fallback
 
-            all_special_pattern = (
-                "(" + "|".join(_stdlib_re_d.escape(s) for s in sorted(self.special_tokens, key=len, reverse=True)) + ")"
+            re_engine = _re if _re is not None else _stdlib_fallback
+            disallowed_pattern = (
+                "(" + "|".join(re_engine.escape(s) for s in sorted(disallowed, key=len, reverse=True)) + ")"
             )
-            for match in _stdlib_re_d.finditer(all_special_pattern, text):
-                if match.group(0) not in allowed:
-                    raise ValueError(f"Encountered text corresponding to disallowed special token {match.group(0)!r}.")
+            match = re_engine.search(disallowed_pattern, text)
+            if match:
+                raise ValueError(f"Encountered text corresponding to disallowed special token {match.group(0)!r}.")
 
         if not allowed:
             return self._encode_ordinary(text)

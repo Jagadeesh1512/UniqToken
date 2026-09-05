@@ -172,14 +172,12 @@ class TiktokenEncoding:
             allowed = set(allowed_special)
 
         if self.special_tokens:
-            # Build pattern from *all* special tokens longest-first so that a
-            # disallowed token that is a prefix of an allowed token does not
-            # cause a false positive (e.g. special_tokens {"aa","aab"},
-            # allowed {"aab"}, text "aab" should not raise for "aa").
+            re_engine = _re if _re is not None else _stdlib_re
+            # Build pattern from all special tokens longest-first to prevent prefix collisions
             all_special_pattern = (
-                "(" + "|".join(_stdlib_re.escape(s) for s in sorted(self.special_tokens, key=len, reverse=True)) + ")"
+                "(" + "|".join(re_engine.escape(s) for s in sorted(self.special_tokens, key=len, reverse=True)) + ")"
             )
-            for match in _stdlib_re.finditer(all_special_pattern, text):
+            for match in re_engine.finditer(all_special_pattern, text):
                 if match.group(0) not in allowed:
                     raise ValueError(f"Encountered text corresponding to disallowed special token {match.group(0)!r}.")
 
