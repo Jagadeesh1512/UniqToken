@@ -2,10 +2,12 @@
 //! Seed n-gram mining for vocabulary construction (Python bindings only).
 
 use crate::error::CoreResult;
+use crate::pipeline::is_combining_mark;
 use ahash::AHashMap;
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 use std::collections::{HashMap, HashSet};
+use unicode_segmentation::UnicodeSegmentation;
 
 fn detect_script(token: &str) -> &'static str {
     for ch in token.chars() {
@@ -69,17 +71,21 @@ pub fn rust_mine_ngrams(
         if chunk.starts_with("<|") && chunk.ends_with("|>") {
             continue;
         }
-        let chars: Vec<char> = chunk.chars().collect();
-        let clen = chars.len();
+        let clusters: Vec<&str> = chunk.graphemes(true).collect();
+        let clen = clusters.len();
         let max_len = max_ngram_for_chunk(&chunk, max_ngram_length);
         for start in 0..clen {
+            // Issue #41: skip n-grams starting with an orphan combining mark.
+            if is_combining_mark(clusters[start].chars().next().unwrap()) {
+                continue;
+            }
             let mut end_limit = clen + 1;
             let ml = start + max_len + 1;
             if ml < end_limit {
                 end_limit = ml;
             }
             for end in (start + 1)..end_limit {
-                let piece: String = chars[start..end].iter().collect();
+                let piece: String = clusters[start..end].concat();
                 *ngram_counts.entry(piece).or_insert(0) += freq;
             }
         }
