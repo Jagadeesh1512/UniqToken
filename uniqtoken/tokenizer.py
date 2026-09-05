@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -915,10 +916,13 @@ class CustomTokenizer:
             try:
                 export_binary(self, binary_path)
             except ValueError:
-                # Sparse token IDs cannot be packed in contiguous binary format;
+                # Sparse token IDs or inconsistent vocab cannot be packed in contiguous binary format;
                 # preserve successful JSON save and remove any stale binary file.
                 if binary_path.is_file():
-                    binary_path.unlink()
+                    try:
+                        binary_path.unlink()
+                    except OSError:
+                        pass
 
     @classmethod
     def load(cls, directory: Union[str, Path], prefer_binary: bool = True) -> CustomTokenizer:
@@ -931,9 +935,13 @@ class CustomTokenizer:
                 from uniqtoken.binary_format import load_binary
 
                 return load_binary(binary_file, use_mmap=True)
-            except Exception:
-                # Safe fallback to standard JSON on any binary load issue
-                pass
+            except (ValueError, OSError) as e:
+                # Safe fallback to standard JSON on corrupted binary or I/O failure
+                warnings.warn(
+                    f"Failed to load binary model from {binary_file} ({e}); falling back to JSON format.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         with open(dir_path / "tokenizer.json", "r", encoding="utf-8") as f:
             config = json.load(f)

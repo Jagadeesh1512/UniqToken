@@ -163,6 +163,53 @@ class TestBinaryMmapModel(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_binary(bin_path2, use_mmap=False)
 
+    def test_inconsistent_vocab_raises(self):
+        """Verifies binary export rejects models with inconsistent vocab and token_to_id."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = Path(tmpdir) / "inconsistent.uniqtok"
+            inconsistent_model = UnigramModel(
+                vocab={"a": 0.0},
+                token_to_id={"a": 0, "b": 1},
+                id_to_token={0: "a", 1: "b"},
+                special_tokens=[],
+            )
+            bad_tok = CustomTokenizer(
+                model=inconsistent_model,
+                normalizer=self.normalizer,
+                pre_tokenizer=self.pre_tokenizer,
+            )
+            with self.assertRaises(ValueError):
+                export_binary(bad_tok, bin_path)
+
+    def test_corrupted_space_codepoint_raises(self):
+        """Verifies binary loader rejects invalid Unicode space codepoints."""
+        import struct
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = Path(tmpdir) / "bad_space.uniqtok"
+            export_binary(self.tokenizer, bin_path)
+            # Corrupt space_codepoint at byte 24 with 0x110000 (outside Unicode range)
+            with open(bin_path, "r+b") as f:
+                f.seek(24)
+                f.write(struct.pack("<Q", 0x110000))
+            with self.assertRaises(ValueError):
+                load_binary(bin_path, use_mmap=True)
+
+    def test_corrupted_binary_fallback_emits_warning(self):
+        """Verifies falling back to JSON emits a UserWarning."""
+        import warnings
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            self.tokenizer.save(tmp_path, save_binary=True)
+            with open(tmp_path / "tokenizer.uniqtok", "wb") as f:
+                f.write(b"CORRUPTED_BYTES_HERE")
+            with warnings.catch_warnings(record=True) as recorded:
+                warnings.simplefilter("always")
+                loaded = CustomTokenizer.load(tmp_path, prefer_binary=True)
+                self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
+                self.assertTrue(any(issubclass(w.category, UserWarning) for w in recorded))
+
 
 if __name__ == "__main__":
     unittest.main()

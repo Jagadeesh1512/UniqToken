@@ -7,6 +7,7 @@ Enables sub-millisecond cold start model loading via OS page mapping (mmap).
 from __future__ import annotations
 import json
 import mmap
+import os
 from pathlib import Path
 import struct
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
@@ -34,8 +35,12 @@ def export_binary(tokenizer: CustomTokenizer, output_path: Union[str, Path]) -> 
     # Sort tokens by ID 0..N-1
     token_to_id = model.token_to_id
     vocab = model.vocab
+    if set(token_to_id.keys()) != set(vocab.keys()):
+        raise ValueError(
+            "binary export requires identical keys in model.vocab and model.token_to_id; use tokenizer.json instead"
+        )
     vocab_size = len(token_to_id)
-    sorted_tokens: List[Tuple[int, str, float]] = [(tid, tok, vocab.get(tok, 0.0)) for tok, tid in token_to_id.items()]
+    sorted_tokens: List[Tuple[int, str, float]] = [(tid, tok, vocab[tok]) for tok, tid in token_to_id.items()]
     sorted_tokens.sort(key=lambda x: x[0])
     # The binary layout addresses tokens by position, so IDs must be dense.
     # Non-contiguous vocabularies (e.g. HF/SentencePiece imports with holes)
@@ -111,12 +116,22 @@ def export_binary(tokenizer: CustomTokenizer, output_path: Union[str, Path]) -> 
         len(config_bytes),
         b"\0" * 12,
     )
-    with open(out_file, "wb") as f:
-        f.write(header)
-        f.write(scores_bytes)
-        f.write(offsets_bytes)
-        f.write(string_data_bytes)
-        f.write(config_bytes)
+    tmp_file = out_file.with_name(f"{out_file.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp_file, "wb") as f:
+            f.write(header)
+            f.write(scores_bytes)
+            f.write(offsets_bytes)
+            f.write(string_data_bytes)
+            f.write(config_bytes)
+        tmp_file.replace(out_file)
+    except Exception:
+        if tmp_file.is_file():
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTokenizer:
@@ -156,6 +171,8 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
             raise ValueError(f"Invalid magic bytes in {path}: expected {MAGIC!r}, got {magic!r}")
         if version != FORMAT_VERSION:
             raise ValueError(f"Unsupported binary format version: {version}")
+        if not (0 <= space_codepoint <= 0x10FFFF) or (0xD800 <= space_codepoint <= 0xDFFF):
+            raise ValueError(f"Corrupted binary model: invalid space codepoint {space_codepoint:#x}")
         file_size = len(mm)
         scores_end = scores_offset + vocab_size * 4
         offsets_end = offsets_offset + vocab_size * 8
