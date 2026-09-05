@@ -156,6 +156,24 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
             raise ValueError(f"Invalid magic bytes in {path}: expected {MAGIC!r}, got {magic!r}")
         if version != FORMAT_VERSION:
             raise ValueError(f"Unsupported binary format version: {version}")
+        file_size = len(mm)
+        scores_end = scores_offset + vocab_size * 4
+        offsets_end = offsets_offset + vocab_size * 8
+        strings_end = strings_data_offset + strings_data_len
+        config_end = config_json_offset + config_json_len
+        if not (
+            HEADER_SIZE
+            <= scores_offset
+            <= scores_end
+            <= offsets_offset
+            <= offsets_end
+            <= strings_data_offset
+            <= strings_end
+            <= config_json_offset
+            <= config_end
+            <= file_size
+        ):
+            raise ValueError("Corrupted binary model: invalid section offsets")
         # Parse config JSON
         config_data = bytes(mm[config_json_offset : config_json_offset + config_json_len])
         config: Dict[str, Any] = json.loads(config_data.decode("utf-8"))
@@ -172,6 +190,8 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
         for i in range(vocab_size):
             off = offsets_flat[i * 2]
             length = offsets_flat[i * 2 + 1]
+            if off + length > strings_data_len:
+                raise ValueError("Corrupted binary model: invalid token offset")
             tok = str(mv[strings_base + off : strings_base + off + length], "utf-8")
             score = scores[i]
             vocab[tok] = score

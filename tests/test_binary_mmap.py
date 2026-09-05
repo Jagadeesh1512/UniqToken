@@ -77,8 +77,8 @@ class TestBinaryMmapModel(unittest.TestCase):
             median_ms = sorted(times)[len(times) // 2]
             self.assertLess(
                 median_ms,
-                5.0,
-                f"Binary mmap load time took {median_ms:.2f}ms (expected < 5ms)",
+                2.0,
+                f"Binary mmap load time took {median_ms:.2f}ms (expected < 2ms)",
             )
 
     def test_safe_fallback_to_json(self):
@@ -109,6 +109,43 @@ class TestBinaryMmapModel(unittest.TestCase):
             export_binary(self.tokenizer, bin_path)
             loaded = load_binary(bin_path, use_mmap=False)
             self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
+
+    def test_sparse_id_save_fallback(self):
+        """Verifies save() gracefully removes stale binary file when model has sparse IDs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            self.tokenizer.save(tmp_path, save_binary=True)
+            self.assertTrue((tmp_path / "tokenizer.uniqtok").is_file())
+            # Model with sparse IDs (0 and 5)
+            sparse_model = UnigramModel(
+                vocab={"a": 0.0, "b": -1.0},
+                token_to_id={"a": 0, "b": 5},
+                id_to_token={0: "a", 5: "b"},
+                special_tokens=[],
+            )
+            sparse_tok = CustomTokenizer(
+                model=sparse_model,
+                normalizer=self.normalizer,
+                pre_tokenizer=self.pre_tokenizer,
+            )
+            sparse_tok.save(tmp_path, save_binary=True)
+            self.assertTrue((tmp_path / "tokenizer.json").is_file())
+            self.assertFalse((tmp_path / "tokenizer.uniqtok").exists())
+
+    def test_invalid_offsets_raise(self):
+        """Verifies binary loader rejects invalid section offsets and out-of-bounds token offsets."""
+        import struct
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = Path(tmpdir) / "corrupt_offsets.uniqtok"
+            export_binary(self.tokenizer, bin_path)
+            # Corrupt scores_offset in header (u64 field at byte 32:
+            # 8 magic + 4xI version/flags/vocab/maxlen + Q space_codepoint).
+            with open(bin_path, "r+b") as f:
+                f.seek(32)
+                f.write(struct.pack("<Q", 999999))
+            with self.assertRaises(ValueError):
+                load_binary(bin_path, use_mmap=True)
 
 
 if __name__ == "__main__":

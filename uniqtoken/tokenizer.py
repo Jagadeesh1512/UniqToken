@@ -911,7 +911,14 @@ class CustomTokenizer:
         if save_binary:
             from uniqtoken.binary_format import export_binary
 
-            export_binary(self, dir_path / "tokenizer.uniqtok")
+            binary_path = dir_path / "tokenizer.uniqtok"
+            try:
+                export_binary(self, binary_path)
+            except ValueError:
+                # Sparse token IDs cannot be packed in contiguous binary format;
+                # preserve successful JSON save and remove any stale binary file.
+                if binary_path.is_file():
+                    binary_path.unlink()
 
     @classmethod
     def load(cls, directory: Union[str, Path], prefer_binary: bool = True) -> CustomTokenizer:
