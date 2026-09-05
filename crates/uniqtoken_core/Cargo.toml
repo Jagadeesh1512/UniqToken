@@ -33,6 +33,10 @@ wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:serde_json"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
+[[test]]
+name = "c_abi_test"
+required-features = ["c_abi"]
+
 [profile.release]
 opt-level = 3
 lto = true

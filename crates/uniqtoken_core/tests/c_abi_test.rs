@@ -1,3 +1,4 @@
+#![cfg(feature = "c_abi")]
 //! Integration tests for UniqToken C-ABI GGUF vocabulary export.
 use std::ffi::CString;
 use std::ptr;
