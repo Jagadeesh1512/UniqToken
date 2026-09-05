@@ -1,5 +1,6 @@
 //! UniqToken Core: High-performance native Rust acceleration module for UniqToken.
 
+#[cfg(feature = "c_abi")]
 pub mod c_abi;
 pub mod error;
 pub mod normalizer;

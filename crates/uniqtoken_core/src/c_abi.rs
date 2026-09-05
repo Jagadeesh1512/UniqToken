@@ -80,7 +80,11 @@ fn push_entry(entries: &mut Vec<TokenEntry>, i: usize, item: &serde_json::Value)
     let tok_str = triple[0].as_str().ok_or(UNIQTOKEN_ERR_PARSE)?;
     let score = triple[1].as_f64().ok_or(UNIQTOKEN_ERR_PARSE)? as f32;
     let id = if triple.len() >= 3 {
-        triple[2].as_u64().ok_or(UNIQTOKEN_ERR_PARSE)? as u32
+        let raw_id = triple[2].as_u64().ok_or(UNIQTOKEN_ERR_PARSE)?;
+        if raw_id > u32::MAX as u64 {
+            return Err(UNIQTOKEN_ERR_PARSE);
+        }
+        raw_id as u32
     } else {
         i as u32
     };
@@ -117,6 +121,13 @@ pub fn parse_vocab_json(content: &str) -> Result<Vec<TokenEntry>, i32> {
         return Err(UNIQTOKEN_ERR_PARSE);
     }
     entries.sort_by_key(|e| e.id);
+    if entries
+        .iter()
+        .enumerate()
+        .any(|(index, entry)| entry.id != index as u32)
+    {
+        return Err(UNIQTOKEN_ERR_PARSE);
+    }
     Ok(entries)
 }
 /// Packs a length-prefixed UTF-8 string into a GGUF byte buffer.
