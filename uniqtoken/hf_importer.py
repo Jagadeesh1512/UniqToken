@@ -306,16 +306,15 @@ class HFByteLevelBPE:
         else:
             allowed = set(allowed_special)
 
-        disallowed = set(self.special_tokens) - allowed
-        if disallowed:
+        if self.special_tokens:
             import re as _stdlib_re_d
 
-            disallowed_pattern = (
-                "(" + "|".join(_stdlib_re_d.escape(s) for s in sorted(disallowed, key=len, reverse=True)) + ")"
+            all_special_pattern = (
+                "(" + "|".join(_stdlib_re_d.escape(s) for s in sorted(self.special_tokens, key=len, reverse=True)) + ")"
             )
-            match = _stdlib_re_d.search(disallowed_pattern, text)
-            if match:
-                raise ValueError(f"Encountered text corresponding to disallowed special token {match.group(0)!r}.")
+            for match in _stdlib_re_d.finditer(all_special_pattern, text):
+                if match.group(0) not in allowed:
+                    raise ValueError(f"Encountered text corresponding to disallowed special token {match.group(0)!r}.")
 
         if not allowed:
             return self._encode_ordinary(text)
@@ -366,10 +365,10 @@ def import_hf_bpe(data: Dict[str, Any]) -> Union[HFByteLevelBPE, BPEModel]:
     merges: List[Tuple[str, str]] = []
     for entry in model.get("merges", []):
         if isinstance(entry, str):
-            parts = entry.split()
-            if len(parts) != 2:
+            if " " not in entry:
                 raise ValueError(f"malformed merge entry: {entry!r}")
-            merges.append((parts[0], parts[1]))
+            left, right = entry.split(" ", 1)
+            merges.append((left, right))
         elif isinstance(entry, (list, tuple)) and len(entry) == 2:
             merges.append((entry[0], entry[1]))
         else:
