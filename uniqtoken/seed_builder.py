@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import math
+import regex as _regex
 from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Deque, Dict, Iterable, List, Optional, Set, Tuple
+
+# Extended grapheme clusters (UAX #29) with current-Unicode data, mirroring
+# the Rust engine's unicode-segmentation crate.
+_X_RE = _regex.compile(r"\X")
+_MARK_RE = _regex.compile(r"\p{M}")
 
 # Module-level Rust core alias, preferring the repo's own crate name. Kept in
 # one place so inner functions never `import caliper_core` (a stale
@@ -15,6 +21,14 @@ except ImportError:
         import caliper_core  # type: ignore[no-redef]
     except ImportError:
         caliper_core = None  # type: ignore[assignment]
+
+
+def _grapheme_clusters(text: str) -> list[str]:
+    """Split `text` into extended grapheme clusters (UAX #29)."""
+    if _X_RE is not None:
+        return [m.group(0) for m in _X_RE.finditer(text)]
+    # Fallback without `regex`: every codepoint is its own cluster.
+    return [ch for ch in text]
 
 
 @dataclass(frozen=True)
@@ -123,10 +137,18 @@ class SeedVocabularyBuilder:
             )
         return tokens
 
+    @staticmethod
+    def _is_combining_mark(char: str) -> bool:
+        """Issue #41: True for combining marks (Mn/Mc/Me), current-Unicode aware."""
+        return _MARK_RE.match(char) is not None
+
     def collect_base_alphabet(self, chunk_counts: Counter[str]) -> List[SeedToken]:
         char_counts: Counter[str] = Counter()
         for chunk, count in chunk_counts.items():
             for char in chunk:
+                # Issue #41: never emit a standalone combining mark without its base.
+                if self._is_combining_mark(char):
+                    continue
                 char_counts[char] += count
 
         # Deterministic sorting: frequency descending, then unicode codepoint ascending
@@ -224,12 +246,16 @@ class SeedVocabularyBuilder:
         for chunk, chunk_freq in chunk_counts.items():
             if chunk in self.special_tokens or (chunk.startswith("<|") and chunk.endswith("|>")):
                 continue
-            chunk_len = len(chunk)
+            clusters = _grapheme_clusters(chunk)
+            cluster_len = len(clusters)
             max_len = self._get_max_ngram_for_chunk(chunk, default_max)
-            for start in range(chunk_len):
-                end_limit = min(chunk_len + 1, start + max_len + 1)
+            for start in range(cluster_len):
+                # Issue #41: never start an n-gram with an orphan combining mark.
+                if self._is_combining_mark(clusters[start]):
+                    continue
+                end_limit = min(cluster_len + 1, start + max_len + 1)
                 for end in range(start + 1, end_limit):
-                    ngram_counts[chunk[start:end]] += chunk_freq
+                    ngram_counts["".join(clusters[start:end])] += chunk_freq
         return ngram_counts
 
     def mine_ngrams_with_entropy(self, chunk_counts: Counter[str]) -> Tuple[Counter[str], Dict[str, float]]:
@@ -242,14 +268,24 @@ class SeedVocabularyBuilder:
             if chunk in self.special_tokens or (chunk.startswith("<|") and chunk.endswith("|>")):
                 continue
 
+            clusters = _grapheme_clusters(chunk)
+            cluster_len = len(clusters)
+            # Precompute codepoint offsets for each cluster boundary,
+            # so l_char / r_char can be looked up from the original string.
+            offsets = [0]
+            for c in clusters:
+                offsets.append(offsets[-1] + len(c))
             chunk_len = len(chunk)
             max_len = self._get_max_ngram_for_chunk(chunk, default_max)
-            for start in range(chunk_len):
-                end_limit = min(chunk_len + 1, start + max_len + 1)
-                l_char = chunk[start - 1] if start > 0 else "^"
+            for start in range(cluster_len):
+                # Issue #41: never start an n-gram with an orphan combining mark.
+                if self._is_combining_mark(clusters[start]):
+                    continue
+                end_limit = min(cluster_len + 1, start + max_len + 1)
+                l_char = chunk[offsets[start] - 1] if offsets[start] > 0 else "^"
                 for end in range(start + 1, end_limit):
-                    sub = chunk[start:end]
-                    r_char = chunk[end] if end < chunk_len else "$"
+                    sub = "".join(clusters[start:end])
+                    r_char = chunk[offsets[end]] if offsets[end] < chunk_len else "$"
                     ngram_counts[sub] += chunk_freq
                     if self.min_boundary_entropy is not None:
                         if sub not in left_ctx:
@@ -282,6 +318,9 @@ class SeedVocabularyBuilder:
             if token in protected_tokens:
                 continue
             if count < self.min_frequency:
+                continue
+            # Issue #41: belt-and-braces — drop orphan combining-mark candidates.
+            if token and self._is_combining_mark(token[0]):
                 continue
             if (
                 self.min_boundary_entropy is not None

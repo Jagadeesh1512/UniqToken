@@ -286,6 +286,99 @@ def _get_cached_regex(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern)
 
 
+try:
+    import regex as _regex
+
+    # Extended grapheme clusters (UAX #29) with current-Unicode data, mirroring
+    # the Rust engine's unicode-segmentation crate.
+    _X_RE = _regex.compile(r"\X")
+    _MARK_RE = _regex.compile(r"\p{M}")
+except ImportError:  # pragma: no cover
+    # ponytail: without the `regex` package the fallbacks below use
+    # interpreter-Unicode `unicodedata`, which can misclassify marks added in
+    # newer Unicode versions (e.g. U+0897 on older CPythons) and drift from
+    # the Rust engine. `regex` is the parity contract / upgrade path.
+    _X_RE = None
+    _MARK_RE = None
+
+
+def _grapheme_boundaries(text: str) -> set:
+    """Offsets of extended-grapheme-cluster boundaries in `text`."""
+    if _X_RE is not None:
+        return {m.start() for m in _X_RE.finditer(text)} | {len(text)}
+    # Fallback without `regex`: every codepoint boundary (no cluster snapping).
+    return set(range(len(text) + 1))
+
+
+def _is_mark(ch: str) -> bool:
+    r"""True for Unicode combining marks (\p{M}); current-Unicode aware."""
+    if _MARK_RE is not None:
+        return _MARK_RE.match(ch) is not None
+    return unicodedata.category(ch).startswith("M")
+
+
+def _snap_spans_to_graphemes(text: str, spans: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Port of `pipeline.rs::snap_spans_to_graphemes` (UAX #29 snapping).
+
+    Offsets are Python string indices (chars); the Rust original uses bytes,
+    which is equivalent since every boundary, span, and advance here shares
+    the same unit. Mirroring the reference keeps Python/rust pre-tokenization
+    identical even on pathological inputs.
+    """
+    if not spans:
+        return []
+    boundaries = _grapheme_boundaries(text)
+    out: List[Tuple[int, int]] = []
+    i = 0
+    n = len(spans)
+    while i < n:
+        s, e = spans[i]
+        if s not in boundaries:
+            if out:
+                last_s, last_e = out[-1]
+                if e > last_e:
+                    last_e = e
+                while last_e not in boundaries and last_e < len(text):
+                    last_e += 1
+                while i + 1 < n and spans[i + 1][0] < last_e:
+                    i += 1
+                    if spans[i][1] > last_e:
+                        last_e = spans[i][1]
+                        while last_e not in boundaries and last_e < len(text):
+                            last_e += 1
+                out[-1] = (last_s, last_e)
+                i += 1
+                continue
+        while e not in boundaries and e < len(text):
+            e += 1
+        while i + 1 < n and spans[i + 1][0] < e:
+            i += 1
+            if spans[i][1] > e:
+                e = spans[i][1]
+                while e not in boundaries and e < len(text):
+                    e += 1
+        # Degenerate leading orphan (text starts with \p{M}): fuse forward,
+        # absorbing every span under the growing cluster end (matches Rust).
+        if not out and s < e:
+            if _is_mark(text[s]) and i + 1 < n:
+                e = spans[i + 1][1]
+                while e not in boundaries and e < len(text):
+                    e += 1
+                j = i + 1
+                while j + 1 < n and spans[j + 1][0] < e:
+                    j += 1
+                    if spans[j][1] > e:
+                        e = spans[j][1]
+                        while e not in boundaries and e < len(text):
+                            e += 1
+                i = j + 1
+                out.append((s, e))
+                continue
+        out.append((s, e))
+        i += 1
+    return out
+
+
 class RegexPreTokenizer:
     """
     Offset-preserving, regex-based Pre-Tokenizer.
@@ -411,21 +504,23 @@ class RegexPreTokenizer:
         if alignment is not None and len(alignment) != len(text):
             raise ValueError("alignment length must match normalized text length")
 
-        for match in self.regex.finditer(text):
-            start, end = match.span()
+        # Issue #41: snap regex boundaries to extended grapheme clusters so no
+        # boundary falls before a combining mark (\p{M}) or inside a ZWJ/virama
+        # sequence. This is a faithful port of the native Rust snapping, so the
+        # Python fallback matches the Rust engine chunk-for-chunk.
+        spans = [m.span() for m in self.regex.finditer(text)]
+        for s, e in _snap_spans_to_graphemes(text, spans):
             if alignment is None:
-                raw_span = (start, end)
+                raw_span = (s, e)
             else:
-                source_spans = [
-                    entry if isinstance(entry, tuple) else (entry, entry + 1) for entry in alignment[start:end]
-                ]
+                source_spans = [entry if isinstance(entry, tuple) else (entry, entry + 1) for entry in alignment[s:e]]
                 if not source_spans:
                     continue
                 raw_span = (
                     min(span[0] for span in source_spans),
                     max(span[1] for span in source_spans),
                 )
-            yield PreToken(text=match.group(0), start=start, end=end, raw_span=raw_span)
+            yield PreToken(text=text[s:e], start=s, end=e, raw_span=raw_span)
 
     @property
     def _native_pretok_parity(self) -> bool:
@@ -459,7 +554,7 @@ class RegexPreTokenizer:
                 return _caliper_core.rust_pre_tokenize(text)
             except (ImportError, AttributeError, ValueError):
                 pass
-        return [m.group(0) for m in self.regex.finditer(text)]
+        return [t.text for t in self.pre_tokenize_with_offsets(text)]
 
     def pre_tokenize_with_offsets(
         self,
