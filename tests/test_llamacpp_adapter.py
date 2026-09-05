@@ -41,9 +41,11 @@ class TestLlamaCppGGUFAdapter(unittest.TestCase):
         self.assertEqual(rc, 0, f"Expected UNIQTOKEN_OK (0), got {rc}")
         self.assertIsNotNone(buf.value)
         self.assertGreater(size.value, 100)
-        data = ctypes.string_at(buf, size.value)
-        self.assertEqual(data[:4], b"GGUF")
-        lib.uniqtoken_free_buffer(buf, size.value)
+        try:
+            data = ctypes.string_at(buf, size.value)
+            self.assertEqual(data[:4], b"GGUF")
+        finally:
+            lib.uniqtoken_free_buffer(buf, size.value)
 
 
 if __name__ == "__main__":

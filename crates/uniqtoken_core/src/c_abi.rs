@@ -3,31 +3,49 @@ use std::ffi::CStr;
 use std::fs;
 use std::os::raw::{c_char, c_void};
 use std::path::Path;
+/// Return code indicating success.
 pub const UNIQTOKEN_OK: i32 = 0;
+/// Return code indicating a null pointer argument.
 pub const UNIQTOKEN_ERR_NULL_PTR: i32 = -1;
+/// Return code indicating an invalid UTF-8 file path.
 pub const UNIQTOKEN_ERR_INVALID_PATH: i32 = -2;
+/// Return code indicating an I/O read failure.
 pub const UNIQTOKEN_ERR_IO: i32 = -3;
+/// Return code indicating a JSON parsing or malformed vocabulary error.
 pub const UNIQTOKEN_ERR_PARSE: i32 = -4;
+/// Return code indicating serialization failure.
 pub const UNIQTOKEN_ERR_SERIALIZE: i32 = -5;
-// GGUF Token Types matching llama.cpp
+/// Normal token type in llama.cpp.
 pub const GGUF_TOKEN_TYPE_NORMAL: i32 = 1;
+/// Unknown token type in llama.cpp.
 pub const GGUF_TOKEN_TYPE_UNKNOWN: i32 = 2;
+/// Control / special token type in llama.cpp.
 pub const GGUF_TOKEN_TYPE_CONTROL: i32 = 3;
+/// User-defined token type in llama.cpp.
 pub const GGUF_TOKEN_TYPE_USER_DEFINED: i32 = 4;
+/// Byte fallback token type in llama.cpp.
 pub const GGUF_TOKEN_TYPE_BYTE: i32 = 6;
+/// Unset / null token ID in llama.cpp (equivalent to LLAMA_TOKEN_NULL = -1).
+pub const LLAMA_TOKEN_NULL: u32 = u32::MAX;
 // GGUF Value Types
 const GGUF_TYPE_UINT32: u32 = 4;
 const GGUF_TYPE_INT32: u32 = 5;
 const GGUF_TYPE_FLOAT32: u32 = 6;
 const GGUF_TYPE_STRING: u32 = 8;
 const GGUF_TYPE_ARRAY: u32 = 9;
+/// Represents a single vocabulary entry with token text, score, ID, and classified type.
 #[derive(Debug, Clone)]
 pub struct TokenEntry {
+    /// Token string content.
     pub token: String,
+    /// Token log-probability or score.
     pub score: f32,
+    /// Contiguous token ID.
     pub id: u32,
+    /// Classified GGUF token type.
     pub token_type: i32,
 }
+/// Classifies a vocabulary token string into its corresponding llama.cpp GGUF token type.
 pub fn classify_token(token: &str) -> i32 {
     if token.starts_with("<0x") && token.ends_with('>') && token.len() == 6 {
         let hex = &token[3..5];
@@ -53,22 +71,36 @@ pub fn classify_token(token: &str) -> i32 {
     }
     GGUF_TOKEN_TYPE_NORMAL
 }
-fn push_entry(entries: &mut Vec<TokenEntry>, i: usize, item: &serde_json::Value) {
-    let Some(triple) = item.as_array() else { return };
+/// Parses and pushes a single token entry triple from JSON into the entries buffer.
+fn push_entry(entries: &mut Vec<TokenEntry>, i: usize, item: &serde_json::Value) -> Result<(), i32> {
+    let triple = item.as_array().ok_or(UNIQTOKEN_ERR_PARSE)?;
     if triple.len() < 2 {
-        return;
+        return Err(UNIQTOKEN_ERR_PARSE);
     }
-    let tok = triple[0].as_str().unwrap_or("").to_string();
-    let score = triple[1].as_f64().unwrap_or(0.0) as f32;
-    let id = triple.get(2).and_then(|v| v.as_u64()).unwrap_or(i as u64) as u32;
-    entries.push(TokenEntry { token: tok, score, id, token_type: classify_token(&tok) });
+    let tok_str = triple[0].as_str().ok_or(UNIQTOKEN_ERR_PARSE)?;
+    let score = triple[1].as_f64().ok_or(UNIQTOKEN_ERR_PARSE)? as f32;
+    let id = if triple.len() >= 3 {
+        triple[2].as_u64().ok_or(UNIQTOKEN_ERR_PARSE)? as u32
+    } else {
+        i as u32
+    };
+    let token = tok_str.to_string();
+    let token_type = classify_token(&token);
+    entries.push(TokenEntry {
+        token,
+        score,
+        id,
+        token_type,
+    });
+    Ok(())
 }
+/// Parses a vocabulary JSON string into a sorted list of `TokenEntry` items.
 pub fn parse_vocab_json(content: &str) -> Result<Vec<TokenEntry>, i32> {
     let value: serde_json::Value = serde_json::from_str(content).map_err(|_| UNIQTOKEN_ERR_PARSE)?;
     let mut entries = Vec::new();
     if let Some(arr) = value.as_array() {
         for (i, item) in arr.iter().enumerate() {
-            push_entry(&mut entries, i, item);
+            push_entry(&mut entries, i, item)?;
         }
     } else if let Some(arr) = value
         .as_object()
@@ -76,7 +108,7 @@ pub fn parse_vocab_json(content: &str) -> Result<Vec<TokenEntry>, i32> {
         .and_then(|v| v.as_array())
     {
         for (i, item) in arr.iter().enumerate() {
-            push_entry(&mut entries, i, item);
+            push_entry(&mut entries, i, item)?;
         }
     } else {
         return Err(UNIQTOKEN_ERR_PARSE);
@@ -87,11 +119,13 @@ pub fn parse_vocab_json(content: &str) -> Result<Vec<TokenEntry>, i32> {
     entries.sort_by_key(|e| e.id);
     Ok(entries)
 }
+/// Packs a length-prefixed UTF-8 string into a GGUF byte buffer.
 fn pack_str(data: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
     data.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     data.extend_from_slice(bytes);
 }
+/// Serializes a slice of token entries into binary GGUF v3 format.
 pub fn serialize_gguf_vocab(entries: &[TokenEntry]) -> Result<Vec<u8>, i32> {
     let mut data = Vec::with_capacity(1024 + entries.len() * 32);
     data.extend_from_slice(b"GGUF");
@@ -122,36 +156,40 @@ pub fn serialize_gguf_vocab(entries: &[TokenEntry]) -> Result<Vec<u8>, i32> {
     for e in entries {
         data.extend_from_slice(&e.token_type.to_le_bytes());
     }
-    let mut bos_id = 1u32;
-    let mut eos_id = 2u32;
-    let mut unk_id = 0u32;
-    let mut pad_id = 0u32;
+    let mut bos_id: Option<u32> = None;
+    let mut eos_id: Option<u32> = None;
+    let mut unk_id: Option<u32> = None;
+    let mut pad_id: Option<u32> = None;
     for e in entries {
         if e.token == "<|bos|>" || e.token == "<s>" {
-            bos_id = e.id;
+            bos_id = Some(e.id);
         } else if e.token == "<|eos|>" || e.token == "</s>" {
-            eos_id = e.id;
+            eos_id = Some(e.id);
         } else if e.token == "<|unk|>" || e.token == "<unk>" {
-            unk_id = e.id;
+            unk_id = Some(e.id);
         } else if e.token == "<|pad|>" || e.token == "<pad>" {
-            pad_id = e.id;
+            pad_id = Some(e.id);
         }
     }
     pack_str(&mut data, "tokenizer.ggml.bos_token_id");
     data.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
-    data.extend_from_slice(&bos_id.to_le_bytes());
+    data.extend_from_slice(&bos_id.unwrap_or(LLAMA_TOKEN_NULL).to_le_bytes());
     pack_str(&mut data, "tokenizer.ggml.eos_token_id");
     data.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
-    data.extend_from_slice(&eos_id.to_le_bytes());
+    data.extend_from_slice(&eos_id.unwrap_or(LLAMA_TOKEN_NULL).to_le_bytes());
     pack_str(&mut data, "tokenizer.ggml.unknown_token_id");
     data.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
-    data.extend_from_slice(&unk_id.to_le_bytes());
+    data.extend_from_slice(&unk_id.unwrap_or(LLAMA_TOKEN_NULL).to_le_bytes());
     pack_str(&mut data, "tokenizer.ggml.padding_token_id");
     data.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
-    data.extend_from_slice(&pad_id.to_le_bytes());
+    data.extend_from_slice(&pad_id.unwrap_or(LLAMA_TOKEN_NULL).to_le_bytes());
     Ok(data)
 }
-/// Pure C-ABI function exporting a UniqToken model/vocab into a binary GGUF v3 buffer.
+/// Exports a UniqToken vocabulary JSON file into binary GGUF v3 format.
+///
+/// # Safety
+/// Pointers `model_path`, `buffer_out`, and `size_out` must be non-null and valid.
+/// The allocated buffer must be freed using `uniqtoken_free_buffer`.
 #[no_mangle]
 pub unsafe extern "C" fn uniqtoken_export_gguf_vocab(
     model_path: *const c_char,
@@ -185,6 +223,9 @@ pub unsafe extern "C" fn uniqtoken_export_gguf_vocab(
     UNIQTOKEN_OK
 }
 /// Deallocates the buffer returned by `uniqtoken_export_gguf_vocab` to prevent leaks.
+///
+/// # Safety
+/// `buffer` must have been allocated by `uniqtoken_export_gguf_vocab` with length `size`.
 #[no_mangle]
 pub unsafe extern "C" fn uniqtoken_free_buffer(buffer: *mut c_void, size: usize) {
     if !buffer.is_null() && size > 0 {
