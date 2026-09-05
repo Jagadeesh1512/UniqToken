@@ -919,10 +919,7 @@ class CustomTokenizer:
                 # Sparse token IDs or inconsistent vocab cannot be packed in contiguous binary format;
                 # preserve successful JSON save and remove any stale binary file.
                 if binary_path.is_file():
-                    try:
-                        binary_path.unlink()
-                    except OSError:
-                        pass
+                    binary_path.unlink()
 
     @classmethod
     def load(cls, directory: Union[str, Path], prefer_binary: bool = True) -> CustomTokenizer:

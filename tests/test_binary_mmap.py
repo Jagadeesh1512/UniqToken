@@ -210,6 +210,27 @@ class TestBinaryMmapModel(unittest.TestCase):
                 self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
                 self.assertTrue(any(issubclass(w.category, UserWarning) for w in recorded))
 
+    def test_malformed_config_shape_fallback(self):
+        """Verifies binary models with non-dict config or component configs fall back to JSON."""
+        import struct
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            self.tokenizer.save(tmp_path, save_binary=True)
+            bin_file = tmp_path / "tokenizer.uniqtok"
+            with open(bin_file, "rb") as f:
+                data = bytearray(f.read())
+            cfg_off, cfg_len = struct.unpack_from("<QQ", data, 64)
+            # Overwrite config JSON with a JSON array '[]' padded with spaces
+            data[cfg_off : cfg_off + cfg_len] = b"[]".ljust(cfg_len, b" ")
+            with open(bin_file, "wb") as f:
+                f.write(data)
+            with self.assertRaises(ValueError):
+                load_binary(bin_file, use_mmap=True)
+            # CustomTokenizer.load should safely catch ValueError and fall back to tokenizer.json
+            loaded = CustomTokenizer.load(tmp_path, prefer_binary=True)
+            self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
+
 
 if __name__ == "__main__":
     unittest.main()

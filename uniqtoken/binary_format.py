@@ -10,6 +10,7 @@ import mmap
 import os
 from pathlib import Path
 import struct
+import tempfile
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
@@ -116,16 +117,28 @@ def export_binary(tokenizer: CustomTokenizer, output_path: Union[str, Path]) -> 
         len(config_bytes),
         b"\0" * 12,
     )
-    tmp_file = out_file.with_name(f"{out_file.name}.tmp.{os.getpid()}")
-    try:
-        with open(tmp_file, "wb") as f:
+    with tempfile.NamedTemporaryFile(
+        dir=out_file.parent,
+        prefix=f"{out_file.name}.tmp.",
+        delete=False,
+    ) as f:
+        tmp_file = Path(f.name)
+        try:
             f.write(header)
             f.write(scores_bytes)
             f.write(offsets_bytes)
             f.write(string_data_bytes)
             f.write(config_bytes)
+        except (OSError, ValueError, struct.error):
+            if tmp_file.is_file():
+                try:
+                    tmp_file.unlink()
+                except OSError:
+                    pass
+            raise
+    try:
         tmp_file.replace(out_file)
-    except Exception:
+    except (OSError, ValueError):
         if tmp_file.is_file():
             try:
                 tmp_file.unlink()
@@ -193,7 +206,18 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
             raise ValueError("Corrupted binary model: invalid section offsets")
         # Parse config JSON
         config_data = bytes(mm[config_json_offset : config_json_offset + config_json_len])
-        config: Dict[str, Any] = json.loads(config_data.decode("utf-8"))
+        try:
+            config = json.loads(config_data.decode("utf-8"))
+        except Exception as e:
+            raise ValueError(f"Corrupted binary model: invalid config JSON: {e}") from e
+        if not isinstance(config, dict):
+            raise ValueError("Corrupted binary model: config must be a JSON object")
+        norm_cfg = config.get("normalizer", {})
+        if not isinstance(norm_cfg, dict):
+            raise ValueError("Corrupted binary model: normalizer config must be a JSON object")
+        pre_cfg = config.get("pre_tokenizer", {})
+        if not isinstance(pre_cfg, dict):
+            raise ValueError("Corrupted binary model: pre_tokenizer config must be a JSON object")
         # Fast unpack scores and strings
         vocab: Dict[str, float] = {}
         token_to_id: Dict[str, int] = {}
@@ -215,42 +239,43 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
             token_to_id[tok] = i
             id_to_token[i] = tok
         byte_fallback = bool(flags & 1)
-        model = UnigramModel(
-            vocab=vocab,
-            token_to_id=token_to_id,
-            id_to_token=id_to_token,
-            special_tokens=config.get("special_tokens", []),
-            max_subword_len=max_subword_len,
-            byte_fallback=byte_fallback,
-            unk_token=config.get("unk_token", "<|unk|>"),
-        )
-        norm_cfg = config.get("normalizer", {})
-        pre_cfg = config.get("pre_tokenizer", {})
-        normalizer = Normalizer(
-            space_char=norm_cfg.get("space_char", chr(space_codepoint)),
-            lowercase=norm_cfg.get("lowercase", False),
-            casefold=norm_cfg.get("casefold", False),
-            normalize_unicode=norm_cfg.get("normalize_unicode", True),
-            normalize_punctuation=norm_cfg.get("normalize_punctuation", False),
-            normalize_unicode_spaces=norm_cfg.get("normalize_unicode_spaces", True),
-            collapse_whitespaces=norm_cfg.get("collapse_whitespaces", False),
-            strip_whitespace=norm_cfg.get("strip_whitespace", False),
-        )
-        pre_tokenizer = RegexPreTokenizer(
-            space_char=pre_cfg.get("space_char", chr(space_codepoint)),
-            split_digits=pre_cfg.get("split_digits", False),
-            split_punctuation=pre_cfg.get("split_punctuation", True),
-            keep_special_tokens=pre_cfg.get("keep_special_tokens", True),
-            special_token_pattern=pre_cfg.get("special_token_pattern", r"<\|[^\s|]+\|>"),
-            hex_literals=pre_cfg.get("hex_literals", True),
-            digit_chunk_size=pre_cfg.get("digit_chunk_size"),
-            digit_chunking=pre_cfg.get("digit_chunking", "greedy"),
-            preset=pre_cfg.get("preset"),
-        )
-        return CustomTokenizer(
-            model=model,
-            normalizer=normalizer,
-            pre_tokenizer=pre_tokenizer,
-        )
+        try:
+            model = UnigramModel(
+                vocab=vocab,
+                token_to_id=token_to_id,
+                id_to_token=id_to_token,
+                special_tokens=config.get("special_tokens", []),
+                max_subword_len=max_subword_len,
+                byte_fallback=byte_fallback,
+                unk_token=config.get("unk_token", "<|unk|>"),
+            )
+            normalizer = Normalizer(
+                space_char=norm_cfg.get("space_char", chr(space_codepoint)),
+                lowercase=norm_cfg.get("lowercase", False),
+                casefold=norm_cfg.get("casefold", False),
+                normalize_unicode=norm_cfg.get("normalize_unicode", True),
+                normalize_punctuation=norm_cfg.get("normalize_punctuation", False),
+                normalize_unicode_spaces=norm_cfg.get("normalize_unicode_spaces", True),
+                collapse_whitespaces=norm_cfg.get("collapse_whitespaces", False),
+                strip_whitespace=norm_cfg.get("strip_whitespace", False),
+            )
+            pre_tokenizer = RegexPreTokenizer(
+                space_char=pre_cfg.get("space_char", chr(space_codepoint)),
+                split_digits=pre_cfg.get("split_digits", False),
+                split_punctuation=pre_cfg.get("split_punctuation", True),
+                keep_special_tokens=pre_cfg.get("keep_special_tokens", True),
+                special_token_pattern=pre_cfg.get("special_token_pattern", r"<\|[^\s|]+\|>"),
+                hex_literals=pre_cfg.get("hex_literals", True),
+                digit_chunk_size=pre_cfg.get("digit_chunk_size"),
+                digit_chunking=pre_cfg.get("digit_chunking", "greedy"),
+                preset=pre_cfg.get("preset"),
+            )
+            return CustomTokenizer(
+                model=model,
+                normalizer=normalizer,
+                pre_tokenizer=pre_tokenizer,
+            )
+        except (TypeError, ValueError, KeyError) as e:
+            raise ValueError(f"Corrupted binary model: invalid component configuration: {e}") from e
     finally:
         f.close()
