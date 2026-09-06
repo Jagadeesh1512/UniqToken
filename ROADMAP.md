@@ -59,12 +59,12 @@ Contributors and maintainers can pick up tasks from the structured queue below. 
 
 ### Stage 2: Canonical Native Rust Engine
 - [ ] **[#42](https://github.com/umran666/UniqToken/issues/42)** [P0-critical] Full native batch pipeline in Rust to eliminate PyO3 FFI boundary overhead.
-- [ ] **[#41](https://github.com/umran666/UniqToken/issues/41)** [P0-critical] Implement UAX #29 grapheme cluster boundaries to prevent Indic/Thai glyph splitting.
+- [x] **[#41](https://github.com/umran666/UniqToken/issues/41)** [P0-critical] Implement UAX #29 grapheme cluster boundaries to prevent Indic/Thai glyph splitting. (Resolved in PR #60)
 - [x] **[#43](https://github.com/umran666/UniqToken/issues/43)** [P1-high] Restrict number clumping to 1–3 digits (\d{1,3}) for LLM arithmetic reasoning. (Resolved in commit `9b193e3`)
 - [ ] **[#36](https://github.com/umran666/UniqToken/issues/36)** [P1-high] Memory-mapped binary model format (mmap) for sub-millisecond cold starts.
 
 ### Stage 3: Differential Compatibility & Exception Matrix
-- [ ] **[#51](https://github.com/umran666/UniqToken/issues/51)** [P1-high] Automated differential test suite against 	iktoken and HuggingFace with documented exception matrix (COMPATIBILITY_EXCEPTIONS.md).
+- [ ] **[#51](https://github.com/umran666/UniqToken/issues/51)** [P1-high] Automated differential test suite against tiktoken and HuggingFace with documented exception matrix (COMPATIBILITY_EXCEPTIONS.md).
 - [ ] **[#46](https://github.com/umran666/UniqToken/issues/46)** [P1-high] Property-based fuzz testing suite using Hypothesis and LibFuzzer.
 
 ### Stage 4: Standalone C-ABI & System Bindings
@@ -73,7 +73,7 @@ Contributors and maintainers can pick up tasks from the structured queue below. 
 
 ### Stage 5: Hugging Face Ecosystem Integration
 - [ ] **[#45](https://github.com/umran666/UniqToken/issues/45)** `[P1-high]` Implement native `uniqtoken.hf.UniqTokenizer` matching `PreTrainedTokenizerFast` conventions with public compatibility matrix.
-- [ ] **[#44](https://github.com/umran666/UniqToken/issues/44)** `[P1-high]` Jinja2 chat template engine and `apply_chat_template` API. (PR #53 in review)
+- [x] **[#44](https://github.com/umran666/UniqToken/issues/44)** `[P1-high]` Jinja2 chat template engine and `apply_chat_template` API. (Resolved in PR #53)
 - [x] **[#24](https://github.com/umran666/UniqToken/issues/24)** `[P2-medium]` Direct `push_to_hub()` publishing utility. (Resolved in PR #54)
 
 ### Stage 6: Inference Serving Engine Hooks
@@ -81,7 +81,7 @@ Contributors and maintainers can pick up tasks from the structured queue below. 
 - [ ] **[#27](https://github.com/umran666/UniqToken/issues/27)** `[P1-high]` vLLM custom tokenizer backend plugin and streaming worker.
 
 ### Stage 7: Large-Scale Training Infrastructure
-- [ ] **[#47](https://github.com/umran666/UniqToken/issues/47)** `[P1-high]` Disk-backed external chunk counter for TB-scale out-of-core training.
+- [x] **[#47](https://github.com/umran666/UniqToken/issues/47)** `[P1-high]` Disk-backed external chunk counter for TB-scale out-of-core training. (Resolved in PR #66)
 - [x] **[#48](https://github.com/umran666/UniqToken/issues/48)** `[P2-medium]` SuperBPE Subword Regularization and BPE Dropout. (Resolved in PR #55)
 
 ### Stage 8: Scientific Evaluation & Research Publication
