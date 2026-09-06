@@ -208,28 +208,61 @@ class TestBinaryMmapModel(unittest.TestCase):
                 warnings.simplefilter("always")
                 loaded = CustomTokenizer.load(tmp_path, prefer_binary=True)
                 self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
-                self.assertTrue(any(issubclass(w.category, UserWarning) for w in recorded))
+                self.assertTrue(
+                    any(
+                        issubclass(w.category, UserWarning) and "Failed to load binary model" in str(w.message)
+                        for w in recorded
+                    )
+                )
 
     def test_malformed_config_shape_fallback(self):
         """Verifies binary models with non-dict config or component configs fall back to JSON."""
         import struct
 
+        # Test cases: root config non-dict, normalizer non-dict, pre_tokenizer non-dict
+        test_payloads = [
+            b"[]",
+            b'{"normalizer": []}',
+            b'{"pre_tokenizer": []}',
+        ]
+        for payload in test_payloads:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                self.tokenizer.save(tmp_path, save_binary=True)
+                bin_file = tmp_path / "tokenizer.uniqtok"
+                with open(bin_file, "rb") as f:
+                    data = bytearray(f.read())
+                cfg_off, cfg_len = struct.unpack_from("<QQ", data, 64)
+                if len(payload) > cfg_len:
+                    continue
+                data[cfg_off : cfg_off + cfg_len] = payload.ljust(cfg_len, b" ")
+                with open(bin_file, "wb") as f:
+                    f.write(data)
+                with self.assertRaises(ValueError):
+                    load_binary(bin_file, use_mmap=True)
+                # CustomTokenizer.load should safely catch ValueError and fall back to tokenizer.json
+                loaded = CustomTokenizer.load(tmp_path, prefer_binary=True)
+                self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
+
+    def test_duplicate_token_in_binary_raises(self):
+        """Verifies binary loader rejects models with duplicate token entries."""
+        import struct
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            self.tokenizer.save(tmp_path, save_binary=True)
-            bin_file = tmp_path / "tokenizer.uniqtok"
-            with open(bin_file, "rb") as f:
-                data = bytearray(f.read())
-            cfg_off, cfg_len = struct.unpack_from("<QQ", data, 64)
-            # Overwrite config JSON with a JSON array '[]' padded with spaces
-            data[cfg_off : cfg_off + cfg_len] = b"[]".ljust(cfg_len, b" ")
-            with open(bin_file, "wb") as f:
-                f.write(data)
-            with self.assertRaises(ValueError):
-                load_binary(bin_file, use_mmap=True)
-            # CustomTokenizer.load should safely catch ValueError and fall back to tokenizer.json
-            loaded = CustomTokenizer.load(tmp_path, prefer_binary=True)
-            self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
+            bin_path = Path(tmpdir) / "duplicate_tokens.uniqtok"
+            export_binary(self.tokenizer, bin_path)
+            with open(bin_path, "r+b") as f:
+                f.seek(40)
+                (offsets_offset,) = struct.unpack("<Q", f.read(8))
+                # Read the first token's (offset, length)
+                f.seek(offsets_offset)
+                first_entry = f.read(8)
+                # Overwrite the second token's (offset, length) with the first token's
+                f.seek(offsets_offset + 8)
+                f.write(first_entry)
+            with self.assertRaises(ValueError) as ctx:
+                load_binary(bin_path, use_mmap=True)
+            self.assertIn("duplicate token", str(ctx.exception))
 
 
 if __name__ == "__main__":

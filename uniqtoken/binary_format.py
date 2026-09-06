@@ -129,7 +129,7 @@ def export_binary(tokenizer: CustomTokenizer, output_path: Union[str, Path]) -> 
             f.write(offsets_bytes)
             f.write(string_data_bytes)
             f.write(config_bytes)
-        except (OSError, ValueError, struct.error):
+        except (OSError, ValueError):
             if tmp_file.is_file():
                 try:
                     tmp_file.unlink()
@@ -208,7 +208,7 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
         config_data = bytes(mm[config_json_offset : config_json_offset + config_json_len])
         try:
             config = json.loads(config_data.decode("utf-8"))
-        except Exception as e:
+        except (UnicodeDecodeError, ValueError) as e:
             raise ValueError(f"Corrupted binary model: invalid config JSON: {e}") from e
         if not isinstance(config, dict):
             raise ValueError("Corrupted binary model: config must be a JSON object")
@@ -234,6 +234,8 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
             if off + length > strings_data_len:
                 raise ValueError("Corrupted binary model: invalid token offset")
             tok = str(mv[strings_base + off : strings_base + off + length], "utf-8")
+            if tok in vocab:
+                raise ValueError(f"Corrupted binary model: duplicate token {tok!r}")
             score = scores[i]
             vocab[tok] = score
             token_to_id[tok] = i
