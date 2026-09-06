@@ -48,9 +48,13 @@ impl RustTokenizer {
         let mut out = Vec::new();
         for m in re.find_iter(&norm) {
             let chunk = m.as_str();
-            let chars: Vec<char> = chunk.chars().collect();
-            let spans = crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
-                .map_err(CoreError)?;
+            let spans = if chunk.is_ascii() {
+                crate::viterbi::viterbi_decode_ascii(chunk.as_bytes(), &self.trie, self.byte_fallback, None)
+            } else {
+                let chars: Vec<char> = chunk.chars().collect();
+                crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
+            }
+            .map_err(CoreError)?;
             for s in spans {
                 out.push(s.token);
             }
@@ -66,9 +70,13 @@ impl RustTokenizer {
                 let mut out = Vec::new();
                 for m in re.find_iter(&norm) {
                     let chunk = m.as_str();
-                    let chars: Vec<char> = chunk.chars().collect();
-                    let spans = crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
-                        .map_err(CoreError)?;
+                    let spans = if chunk.is_ascii() {
+                        crate::viterbi::viterbi_decode_ascii(chunk.as_bytes(), &self.trie, self.byte_fallback, None)
+                    } else {
+                        let chars: Vec<char> = chunk.chars().collect();
+                        crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
+                    }
+                    .map_err(CoreError)?;
                     for s in spans {
                         out.push(s.token);
                     }
@@ -84,9 +92,13 @@ impl RustTokenizer {
         let mut out = Vec::new();
         for m in re.find_iter(&norm) {
             let chunk = m.as_str();
-            let chars: Vec<char> = chunk.chars().collect();
-            let spans = crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
-                .map_err(CoreError)?;
+            let spans = if chunk.is_ascii() {
+                crate::viterbi::viterbi_decode_ascii(chunk.as_bytes(), &self.trie, self.byte_fallback, None)
+            } else {
+                let chars: Vec<char> = chunk.chars().collect();
+                crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
+            }
+            .map_err(CoreError)?;
             for s in spans {
                 out.push(s.token_id.ok_or_else(|| {
                     CoreError(format!("decoded token {:?} has no integer ID", s.token))
@@ -104,9 +116,13 @@ impl RustTokenizer {
                 let mut out = Vec::new();
                 for m in re.find_iter(&norm) {
                     let chunk = m.as_str();
-                    let chars: Vec<char> = chunk.chars().collect();
-                    let spans = crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
-                        .map_err(CoreError)?;
+                    let spans = if chunk.is_ascii() {
+                        crate::viterbi::viterbi_decode_ascii(chunk.as_bytes(), &self.trie, self.byte_fallback, None)
+                    } else {
+                        let chars: Vec<char> = chunk.chars().collect();
+                        crate::viterbi::viterbi_decode_chars(&chars, &self.trie, self.byte_fallback, None)
+                    }
+                    .map_err(CoreError)?;
                     for s in spans {
                         out.push(s.token_id.ok_or_else(|| {
                             CoreError(format!("decoded token {:?} has no integer ID", s.token))
@@ -149,15 +165,20 @@ pub fn rust_diagnostic_batch(
             t_pre += t0.elapsed().as_secs_f64();
             total_chunks += chunks.len();
             for chunk in chunks {
-                let chars: Vec<char> = chunk.chars().collect();
+                let is_ascii = chunk.is_ascii();
                 let t0 = Instant::now();
-                let spans = crate::viterbi::viterbi_decode_chars(&chars, trie, byte_fallback, None)
-                    .map_err(CoreError)?;
+                let spans = if is_ascii {
+                    crate::viterbi::viterbi_decode_ascii(chunk.as_bytes(), trie, byte_fallback, None)
+                } else {
+                    let chars: Vec<char> = chunk.chars().collect();
+                    crate::viterbi::viterbi_decode_chars(&chars, trie, byte_fallback, None)
+                }
+                .map_err(CoreError)?;
                 t_viterbi += t0.elapsed().as_secs_f64();
                 total_tokens += spans.len();
-                // edges/states approx: states = chars.len()+1, edges = spans.len() + fallback
+                // edges/states approx: states = length + 1, edges = spans.len() + fallback
                 total_edges += spans.len();
-                total_states += chars.len() + 1;
+                total_states += if is_ascii { chunk.len() + 1 } else { chunk.chars().count() + 1 };
                 let t0 = Instant::now();
                 let _: Vec<String> = spans.into_iter().map(|s| s.token).collect();
                 t_alloc += t0.elapsed().as_secs_f64();
