@@ -1,7 +1,11 @@
 """Integration test for llama.cpp GGUF vocabulary table loader and C-ABI hook (Issue #52)."""
 
+import json
+import struct
 import unittest
 from pathlib import Path
+
+from uniqtoken.hf_exporter import HuggingFaceExporter
 
 
 class TestLlamaCppGGUFAdapter(unittest.TestCase):
@@ -45,6 +49,40 @@ class TestLlamaCppGGUFAdapter(unittest.TestCase):
         try:
             data = ctypes.string_at(buf, size.value)
             self.assertEqual(data[:4], b"GGUF")
+            # Decode returned GGUF binary buffer with HuggingFaceExporter
+            meta = HuggingFaceExporter.extract_gguf_metadata(data)
+            self.assertEqual(meta.get("tokenizer.ggml.model"), "llama")
+            with open(vocab_path, "r", encoding="utf-8") as vf:
+                raw_entries = json.load(vf)
+            # c_abi.rs sorts entries by ID ascending
+            sorted_entries = sorted(raw_entries, key=lambda item: item[2] if len(item) >= 3 else 0)
+            expected_tokens = [item[0] for item in sorted_entries]
+            expected_scores = [struct.unpack("<f", struct.pack("<f", float(item[1])))[0] for item in sorted_entries]
+
+            def classify_token(token: str) -> int:
+                if token.startswith("<0x") and token.endswith(">") and len(token) == 6:
+                    hex_part = token[3:5]
+                    if all(c in "0123456789abcdefABCDEF" for c in hex_part):
+                        return 6  # BYTE
+                if token in ("<unk>", "<|unk|>"):
+                    return 2  # UNKNOWN
+                if token.startswith("<|user_") or token.startswith("<|custom_"):
+                    return 4  # USER_DEFINED
+                if token in ("<s>", "</s>", "<pad>", "<|bos|>", "<|eos|>", "<|pad|>") or (
+                    token.startswith("<|") and token.endswith("|>")
+                ):
+                    return 3  # CONTROL
+                return 1  # NORMAL
+
+            expected_types = [classify_token(t) for t in expected_tokens]
+            self.assertEqual(meta.get("tokenizer.ggml.tokens"), expected_tokens)
+            self.assertEqual(meta.get("tokenizer.ggml.scores"), expected_scores)
+            self.assertEqual(meta.get("tokenizer.ggml.token_type"), expected_types)
+            # Validate expected special-token IDs
+            self.assertEqual(meta.get("tokenizer.ggml.bos_token_id"), 4)
+            self.assertEqual(meta.get("tokenizer.ggml.eos_token_id"), 5)
+            self.assertEqual(meta.get("tokenizer.ggml.unknown_token_id"), 7)
+            self.assertEqual(meta.get("tokenizer.ggml.padding_token_id"), 6)
         finally:
             lib.uniqtoken_free_buffer(buf, size.value)
 
