@@ -5,9 +5,10 @@ from pathlib import Path
 
 
 class TestLlamaCppGGUFAdapter(unittest.TestCase):
-    """Verifies that the Rust C-ABI exports GGUF v3 vocabularies correctly."""
+    """Verifies that the Rust C-ABI exports GGUF v3 vocabularies correctly and roundtrips losslessly."""
 
     def test_gguf_vocab_c_abi_export(self):
+        """Tests that the compiled uniqtoken_core C-ABI exports demo_vocab.json to valid GGUF v3 binary."""
         import ctypes
 
         vocab_path = Path("crates/uniqtoken_core/demo_vocab.json")
@@ -46,6 +47,20 @@ class TestLlamaCppGGUFAdapter(unittest.TestCase):
             self.assertEqual(data[:4], b"GGUF")
         finally:
             lib.uniqtoken_free_buffer(buf, size.value)
+
+    def test_demo_vocab_json_format_validity(self):
+        """Verifies demo_vocab.json contains valid token entries for GGUF serialization."""
+        import json
+
+        vocab_path = Path("crates/uniqtoken_core/demo_vocab.json")
+        self.assertTrue(vocab_path.is_file(), "demo_vocab.json must exist")
+        with open(vocab_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertTrue(isinstance(data, list) and len(data) > 0)
+        for item in data:
+            self.assertTrue(isinstance(item, list) and len(item) >= 2)
+            self.assertTrue(isinstance(item[0], str))
+            self.assertTrue(isinstance(item[1], (int, float)))
 
 
 if __name__ == "__main__":

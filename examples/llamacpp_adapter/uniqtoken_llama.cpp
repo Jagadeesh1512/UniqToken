@@ -5,13 +5,31 @@
 #include <unordered_map>
 #include <cstring>
 #include <cstdint>
-#include <cassert>
+/** Maximum allowed vocabulary size to prevent unbounded memory allocation / OOM attacks. */
+constexpr uint64_t MAX_VOCAB_SIZE = 1000000;
+/** GGUF value type identifiers matching GGUF v3 specification. */
+constexpr uint32_t GGUF_TYPE_UINT8   = 0;
+constexpr uint32_t GGUF_TYPE_INT8    = 1;
+constexpr uint32_t GGUF_TYPE_UINT16  = 2;
+constexpr uint32_t GGUF_TYPE_INT16   = 3;
+constexpr uint32_t GGUF_TYPE_UINT32  = 4;
+constexpr uint32_t GGUF_TYPE_INT32   = 5;
+constexpr uint32_t GGUF_TYPE_FLOAT32 = 6;
+constexpr uint32_t GGUF_TYPE_BOOL    = 7;
+constexpr uint32_t GGUF_TYPE_STRING  = 8;
+constexpr uint32_t GGUF_TYPE_ARRAY   = 9;
+constexpr uint32_t GGUF_TYPE_UINT64  = 10;
+constexpr uint32_t GGUF_TYPE_INT64   = 11;
+constexpr uint32_t GGUF_TYPE_FLOAT64 = 12;
 template <typename T>
 static T read_le(const uint8_t* ptr) {
     T val;
     std::memcpy(&val, ptr, sizeof(T));
     return val;
 }
+/**
+ * @brief In-memory representation of a llama.cpp-compatible vocabulary loaded from GGUF.
+ */
 class UniqTokenLlamaVocab {
 public:
     std::string model_type;
@@ -23,6 +41,12 @@ public:
     uint32_t eos_id = 2;
     uint32_t unk_id = 0;
     uint32_t pad_id = 0;
+    /**
+     * @brief Exports and parses a GGUF vocabulary table from the given UniqToken model path.
+     * @param model_path Path to the JSON vocabulary or tokenizer model.
+     * @param vocab Target UniqTokenLlamaVocab object to populate.
+     * @return true on success, false on parsing or validation failure.
+     */
     static bool load(const std::string& model_path, UniqTokenLlamaVocab& vocab) {
         void* buffer = nullptr;
         size_t size = 0;
@@ -68,12 +92,26 @@ public:
             p += len;
             return true;
         };
-        auto read_array_header = [&](uint64_t elem_size, uint64_t& arr_len) -> bool {
+        auto read_array_header = [&](uint32_t expected_elem_type, uint64_t min_elem_size, uint64_t& arr_len) -> bool {
             if (remaining() < 12) return false;
-            p += 4; // element type
+            uint32_t elem_type = read_le<uint32_t>(p);
+            p += 4;
+            if (elem_type != expected_elem_type) {
+                std::cerr << "Mismatched array element type: expected " << expected_elem_type
+                          << ", got " << elem_type << std::endl;
+                return false;
+            }
             arr_len = read_le<uint64_t>(p);
             p += 8;
-            return (elem_size == 0 || remaining() / elem_size >= arr_len);
+            if (arr_len > MAX_VOCAB_SIZE) {
+                std::cerr << "Array length " << arr_len << " exceeds max allowed (" << MAX_VOCAB_SIZE << ")" << std::endl;
+                return false;
+            }
+            if (min_elem_size > 0 && remaining() / min_elem_size < arr_len) {
+                std::cerr << "Array length " << arr_len << " exceeds remaining buffer capacity" << std::endl;
+                return false;
+            }
+            return true;
         };
         for (uint64_t i = 0; i < kv_count && p < end; ++i) {
             std::string key;
@@ -86,16 +124,19 @@ public:
                 return false;
             }
             uint32_t val_type = read_le<uint32_t>(p);
-            (void)val_type;
             p += 4;
             if (key == "tokenizer.ggml.model") {
-                if (!read_str(vocab.model_type)) {
+                if (val_type != GGUF_TYPE_STRING || !read_str(vocab.model_type)) {
                     uniqtoken_free_buffer(buffer, size);
                     return false;
                 }
             } else if (key == "tokenizer.ggml.tokens") {
+                if (val_type != GGUF_TYPE_ARRAY) {
+                    uniqtoken_free_buffer(buffer, size);
+                    return false;
+                }
                 uint64_t arr_len = 0;
-                if (!read_array_header(0, arr_len)) {
+                if (!read_array_header(GGUF_TYPE_STRING, sizeof(uint64_t), arr_len)) {
                     uniqtoken_free_buffer(buffer, size);
                     return false;
                 }
@@ -108,8 +149,12 @@ public:
                     vocab.token_to_id[vocab.tokens[t]] = static_cast<int32_t>(t);
                 }
             } else if (key == "tokenizer.ggml.scores") {
+                if (val_type != GGUF_TYPE_ARRAY) {
+                    uniqtoken_free_buffer(buffer, size);
+                    return false;
+                }
                 uint64_t arr_len = 0;
-                if (!read_array_header(sizeof(float), arr_len)) {
+                if (!read_array_header(GGUF_TYPE_FLOAT32, sizeof(float), arr_len)) {
                     uniqtoken_free_buffer(buffer, size);
                     return false;
                 }
@@ -117,8 +162,12 @@ public:
                 std::memcpy(vocab.scores.data(), p, arr_len * sizeof(float));
                 p += arr_len * sizeof(float);
             } else if (key == "tokenizer.ggml.token_type") {
+                if (val_type != GGUF_TYPE_ARRAY) {
+                    uniqtoken_free_buffer(buffer, size);
+                    return false;
+                }
                 uint64_t arr_len = 0;
-                if (!read_array_header(sizeof(int32_t), arr_len)) {
+                if (!read_array_header(GGUF_TYPE_INT32, sizeof(int32_t), arr_len)) {
                     uniqtoken_free_buffer(buffer, size);
                     return false;
                 }
@@ -126,28 +175,52 @@ public:
                 std::memcpy(vocab.token_types.data(), p, arr_len * sizeof(int32_t));
                 p += arr_len * sizeof(int32_t);
             } else if (key == "tokenizer.ggml.bos_token_id") {
-                if (remaining() < 4) { uniqtoken_free_buffer(buffer, size); return false; }
-                vocab.bos_id = read_le<uint32_t>(p); p += 4;
+                if (val_type != GGUF_TYPE_UINT32 || remaining() < 4) {
+                    uniqtoken_free_buffer(buffer, size);
+                    return false;
+                }
+                vocab.bos_id = read_le<uint32_t>(p);
+                p += 4;
             } else if (key == "tokenizer.ggml.eos_token_id") {
-                if (remaining() < 4) { uniqtoken_free_buffer(buffer, size); return false; }
-                vocab.eos_id = read_le<uint32_t>(p); p += 4;
+                if (val_type != GGUF_TYPE_UINT32 || remaining() < 4) {
+                    uniqtoken_free_buffer(buffer, size);
+                    return false;
+                }
+                vocab.eos_id = read_le<uint32_t>(p);
+                p += 4;
             } else if (key == "tokenizer.ggml.unknown_token_id") {
-                if (remaining() < 4) { uniqtoken_free_buffer(buffer, size); return false; }
-                vocab.unk_id = read_le<uint32_t>(p); p += 4;
+                if (val_type != GGUF_TYPE_UINT32 || remaining() < 4) {
+                    uniqtoken_free_buffer(buffer, size);
+                    return false;
+                }
+                vocab.unk_id = read_le<uint32_t>(p);
+                p += 4;
             } else if (key == "tokenizer.ggml.padding_token_id") {
-                if (remaining() < 4) { uniqtoken_free_buffer(buffer, size); return false; }
-                vocab.pad_id = read_le<uint32_t>(p); p += 4;
+                if (val_type != GGUF_TYPE_UINT32 || remaining() < 4) {
+                    uniqtoken_free_buffer(buffer, size);
+                    return false;
+                }
+                vocab.pad_id = read_le<uint32_t>(p);
+                p += 4;
             }
         }
         uniqtoken_free_buffer(buffer, size);
         return true;
     }
+    /**
+     * @brief Looks up a token ID by its exact text representation.
+     * @param tok Token string to find.
+     * @return Integer token ID or unk_id if not present.
+     */
     int32_t find_token_id(const std::string& tok) const {
         auto it = token_to_id.find(tok);
         if (it != token_to_id.end()) return it->second;
         return static_cast<int32_t>(unk_id);
     }
 };
+/**
+ * @brief Verification entry point for loading and validating GGUF vocab tables.
+ */
 int main(int argc, char** argv) {
     std::string path = "crates/uniqtoken_core/demo_vocab.json";
     if (argc > 1) {
@@ -163,9 +236,20 @@ int main(int argc, char** argv) {
     std::cout << "  - Vocab size: " << vocab.tokens.size() << " tokens" << std::endl;
     std::cout << "  - Special IDs: BOS=" << vocab.bos_id << ", EOS=" << vocab.eos_id
               << ", UNK=" << vocab.unk_id << ", PAD=" << vocab.pad_id << std::endl;
-    assert(!vocab.tokens.empty());
-    assert(vocab.tokens.size() == vocab.scores.size());
-    assert(vocab.tokens.size() == vocab.token_types.size());
+    if (vocab.tokens.empty()) {
+        std::cerr << "Validation failed: vocabulary is empty." << std::endl;
+        return 1;
+    }
+    if (vocab.tokens.size() != vocab.scores.size()) {
+        std::cerr << "Validation failed: tokens count (" << vocab.tokens.size()
+                  << ") does not match scores count (" << vocab.scores.size() << ")." << std::endl;
+        return 1;
+    }
+    if (vocab.tokens.size() != vocab.token_types.size()) {
+        std::cerr << "Validation failed: tokens count (" << vocab.tokens.size()
+                  << ") does not match token_types count (" << vocab.token_types.size() << ")." << std::endl;
+        return 1;
+    }
     std::cout << "[llama.cpp Hook] Validation PASSED with zero leaks." << std::endl;
     return 0;
 }

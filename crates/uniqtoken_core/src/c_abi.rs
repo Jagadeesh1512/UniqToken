@@ -28,11 +28,16 @@ pub const GGUF_TOKEN_TYPE_BYTE: i32 = 6;
 /// Unset / null token ID in llama.cpp (equivalent to LLAMA_TOKEN_NULL = -1).
 pub const LLAMA_TOKEN_NULL: u32 = u32::MAX;
 // GGUF Value Types
-const GGUF_TYPE_UINT32: u32 = 4;
-const GGUF_TYPE_INT32: u32 = 5;
-const GGUF_TYPE_FLOAT32: u32 = 6;
-const GGUF_TYPE_STRING: u32 = 8;
-const GGUF_TYPE_ARRAY: u32 = 9;
+/// GGUF uint32 value type tag.
+pub const GGUF_TYPE_UINT32: u32 = 4;
+/// GGUF int32 value type tag.
+pub const GGUF_TYPE_INT32: u32 = 5;
+/// GGUF float32 value type tag.
+pub const GGUF_TYPE_FLOAT32: u32 = 6;
+/// GGUF string value type tag.
+pub const GGUF_TYPE_STRING: u32 = 8;
+/// GGUF array value type tag.
+pub const GGUF_TYPE_ARRAY: u32 = 9;
 /// Represents a single vocabulary entry with token text, score, ID, and classified type.
 #[derive(Debug, Clone)]
 pub struct TokenEntry {
