@@ -72,12 +72,20 @@ class SyntheticRanksTests(unittest.TestCase):
 
     def test_special_tokens(self):
         text = "hello <|endoftext|> world"
-        self.assertNotIn(1000, self.enc.encode(text), "disallowed special must be byte-encoded")
+        # Disallowed special tokens now raise ValueError, matching tiktoken's exact behavior.
+        with self.assertRaises(ValueError):
+            self.enc.encode(text)
         ids = self.enc.encode(text, allowed_special="all")
         self.assertIn(1000, ids)
         self.assertEqual(self.enc.decode(ids), text)
-        whitelist = self.enc.encode(text, allowed_special={"<|fim|>"})
-        self.assertNotIn(1001, whitelist)
+        # With <|fim|> allowed but <|endoftext|> not, encoding must raise
+        # because the text contains the disallowed <|endoftext|>.
+        with self.assertRaises(ValueError):
+            self.enc.encode(text, allowed_special={"<|fim|>"})
+        # The two leading/trailing chunks around the disallowed special must still be byte-encodable
+        # when the special itself is allowed but other specials are not.
+        chunked = self.enc.encode("hello <|endoftext|> world", allowed_special={"<|endoftext|>"})
+        self.assertIn(1000, chunked)
 
     def test_decode_rejects_unknown_ids(self):
         with self.assertRaises(ValueError):
