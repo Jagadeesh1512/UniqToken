@@ -215,9 +215,50 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
         norm_cfg = config.get("normalizer", {})
         if not isinstance(norm_cfg, dict):
             raise ValueError("Corrupted binary model: normalizer config must be a JSON object")
+        for key in (
+            "lowercase",
+            "casefold",
+            "normalize_unicode",
+            "normalize_punctuation",
+            "normalize_unicode_spaces",
+            "collapse_whitespaces",
+            "strip_whitespace",
+        ):
+            if key in norm_cfg and not isinstance(norm_cfg[key], bool):
+                raise ValueError(f"Corrupted binary model: normalizer.{key} must be a boolean")
+        if "space_char" in norm_cfg and not isinstance(norm_cfg["space_char"], str):
+            raise ValueError("Corrupted binary model: normalizer.space_char must be a string")
         pre_cfg = config.get("pre_tokenizer", {})
         if not isinstance(pre_cfg, dict):
             raise ValueError("Corrupted binary model: pre_tokenizer config must be a JSON object")
+        for key in (
+            "split_digits",
+            "split_punctuation",
+            "keep_special_tokens",
+            "hex_literals",
+        ):
+            if key in pre_cfg and not isinstance(pre_cfg[key], bool):
+                raise ValueError(f"Corrupted binary model: pre_tokenizer.{key} must be a boolean")
+        if "space_char" in pre_cfg and not isinstance(pre_cfg["space_char"], str):
+            raise ValueError("Corrupted binary model: pre_tokenizer.space_char must be a string")
+        if "special_token_pattern" in pre_cfg and not isinstance(pre_cfg["special_token_pattern"], str):
+            raise ValueError("Corrupted binary model: pre_tokenizer.special_token_pattern must be a string")
+        if (
+            "digit_chunk_size" in pre_cfg
+            and pre_cfg["digit_chunk_size"] is not None
+            and not isinstance(pre_cfg["digit_chunk_size"], int)
+        ):
+            raise ValueError("Corrupted binary model: pre_tokenizer.digit_chunk_size must be an int or None")
+        if "digit_chunking" in pre_cfg and pre_cfg["digit_chunking"] not in ("block3", "single", "greedy"):
+            raise ValueError(
+                f"Corrupted binary model: invalid pre_tokenizer.digit_chunking: {pre_cfg['digit_chunking']!r}"
+            )
+        if "preset" in pre_cfg and pre_cfg["preset"] is not None and not isinstance(pre_cfg["preset"], str):
+            raise ValueError("Corrupted binary model: pre_tokenizer.preset must be a string or None")
+        if "special_tokens" in config and not isinstance(config["special_tokens"], list):
+            raise ValueError("Corrupted binary model: special_tokens must be a list")
+        if "unk_token" in config and not isinstance(config["unk_token"], str):
+            raise ValueError("Corrupted binary model: unk_token must be a string")
         # Fast unpack scores and strings
         vocab: Dict[str, float] = {}
         token_to_id: Dict[str, int] = {}

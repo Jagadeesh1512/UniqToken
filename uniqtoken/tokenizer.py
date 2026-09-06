@@ -915,11 +915,17 @@ class CustomTokenizer:
             binary_path = dir_path / "tokenizer.uniqtok"
             try:
                 export_binary(self, binary_path)
-            except ValueError:
-                # Sparse token IDs or inconsistent vocab cannot be packed in contiguous binary format;
+            except (ValueError, OSError) as e:
+                # Sparse token IDs, inconsistent vocab, or I/O export failure:
                 # preserve successful JSON save and remove any stale binary file.
                 if binary_path.is_file():
                     binary_path.unlink()
+                if isinstance(e, OSError):
+                    warnings.warn(
+                        f"Failed to export binary model to {binary_path} ({e}); continuing with JSON-only save.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
     @classmethod
     def load(cls, directory: Union[str, Path], prefer_binary: bool = True) -> CustomTokenizer:

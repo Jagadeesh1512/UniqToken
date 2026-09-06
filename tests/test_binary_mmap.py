@@ -219,11 +219,14 @@ class TestBinaryMmapModel(unittest.TestCase):
         """Verifies binary models with non-dict config or component configs fall back to JSON."""
         import struct
 
-        # Test cases: root config non-dict, normalizer non-dict, pre_tokenizer non-dict
+        # Test cases: root config non-dict, normalizer non-dict, pre_tokenizer non-dict,
+        # and invalid config field types.
         test_payloads = [
             b"[]",
             b'{"normalizer": []}',
             b'{"pre_tokenizer": []}',
+            b'{"normalizer": {"lowercase": "false"}}',
+            b'{"pre_tokenizer": {"digit_chunking": "invalid"}}',
         ]
         for payload in test_payloads:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -233,8 +236,7 @@ class TestBinaryMmapModel(unittest.TestCase):
                 with open(bin_file, "rb") as f:
                     data = bytearray(f.read())
                 cfg_off, cfg_len = struct.unpack_from("<QQ", data, 64)
-                if len(payload) > cfg_len:
-                    continue
+                self.assertLessEqual(len(payload), cfg_len)
                 data[cfg_off : cfg_off + cfg_len] = payload.ljust(cfg_len, b" ")
                 with open(bin_file, "wb") as f:
                     f.write(data)
@@ -243,6 +245,25 @@ class TestBinaryMmapModel(unittest.TestCase):
                 # CustomTokenizer.load should safely catch ValueError and fall back to tokenizer.json
                 loaded = CustomTokenizer.load(tmp_path, prefer_binary=True)
                 self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
+
+    def test_save_binary_oserror_warning_fallback(self):
+        """Verifies that OSError during export_binary emits a warning and keeps JSON save."""
+        from unittest.mock import patch
+
+        import warnings
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch("uniqtoken.binary_format.export_binary", side_effect=OSError("Disk full")):
+                with warnings.catch_warnings(record=True) as recorded_warnings:
+                    warnings.simplefilter("always")
+                    self.tokenizer.save(tmp_path, save_binary=True)
+            # JSON should exist and be loadable, while binary artifact is cleaned up
+            self.assertTrue((tmp_path / "tokenizer.json").is_file())
+            self.assertFalse((tmp_path / "tokenizer.uniqtok").is_file())
+            self.assertTrue(any("Failed to export binary model" in str(w.message) for w in recorded_warnings))
+            loaded = CustomTokenizer.load(tmp_path)
+            self.assertEqual(loaded.model.vocab_size, self.tokenizer.model.vocab_size)
 
     def test_duplicate_token_in_binary_raises(self):
         """Verifies binary loader rejects models with duplicate token entries."""
