@@ -66,6 +66,18 @@ def train_command(args: argparse.Namespace) -> int:
     if args.min_boundary_entropy is not None and args.min_boundary_entropy < 0:
         print("Error: --min-boundary-entropy must not be negative.", file=sys.stderr)
         return 1
+    is_streaming = getattr(args, "streaming", False)
+    chunk_size_mb = getattr(args, "chunk_size_mb", 500)
+    if chunk_size_mb is None or chunk_size_mb <= 0:
+        print("Error: --chunk-size-mb must be a positive integer.", file=sys.stderr)
+        return 1
+    chunk_size_bytes = chunk_size_mb * 1024 * 1024
+    if is_streaming and args.superbpe_merges > 0:
+        print(
+            "Error: --streaming cannot be combined with --superbpe-merges (SuperBPE needs the full in-memory corpus).",
+            file=sys.stderr,
+        )
+        return 1
 
     if getattr(args, "no_progress", False):
         os.environ["UNIQTOKEN_NO_PROGRESS"] = "1"
@@ -79,23 +91,56 @@ def train_command(args: argparse.Namespace) -> int:
         total_bytes += p.stat().st_size
 
     show_progress = (tqdm is not None) and not getattr(args, "no_progress", False)
-    read_pbar = None
-    if show_progress and total_bytes > 0:
-        read_pbar = tqdm(
-            total=total_bytes,
-            unit="B",
-            unit_scale=True,
-            unit_divisor=1024,
-            desc="Reading/Processing corpus",
-            dynamic_ncols=True,
-            leave=True,
-        )
 
     corpus: List[str] = []
-    start_time = time.perf_counter()
-    bytes_read = 0
+    if not is_streaming:
+        read_pbar = None
+        if show_progress and total_bytes > 0:
+            read_pbar = tqdm(
+                total=total_bytes,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc="Reading/Processing corpus",
+                dynamic_ncols=True,
+                leave=True,
+            )
+        start_time = time.perf_counter()
+        bytes_read = 0
 
-    try:
+        try:
+            for path in args.corpus:
+                p = Path(path)
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                doc_parts: List[str] = []
+                with open(p, "rb") as f:
+                    while True:
+                        block = f.read(256 * 1024)
+                        if not block:
+                            break
+                        bytes_read += len(block)
+                        doc_parts.append(decoder.decode(block))
+                        if read_pbar is not None:
+                            read_pbar.update(len(block))
+                            elapsed = time.perf_counter() - start_time
+                            mb_per_sec = (bytes_read / (1024 * 1024)) / elapsed if elapsed > 0 else 0.0
+                            read_pbar.set_postfix({"throughput": f"{mb_per_sec:.2f} MB/s"})
+
+                doc_parts.append(decoder.decode(b"", final=True))
+                document = "".join(doc_parts)
+                if document:
+                    # A corpus file is one document. Preserve indentation, blank lines,
+                    # and trailing whitespace because they are meaningful training data.
+                    corpus.append(document)
+        finally:
+            if read_pbar is not None:
+                read_pbar.close()
+
+    def _corpus_doc_stream():
+        # One document per file, identical to non-streaming mode (whole-file
+        # decode, not line-split), so streaming never changes training input.
+        # Only one file is resident at a time: RAM stays bounded by the
+        # largest single file instead of the whole corpus.
         for path in args.corpus:
             p = Path(path)
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -105,31 +150,23 @@ def train_command(args: argparse.Namespace) -> int:
                     block = f.read(256 * 1024)
                     if not block:
                         break
-                    bytes_read += len(block)
                     doc_parts.append(decoder.decode(block))
-                    if read_pbar is not None:
-                        read_pbar.update(len(block))
-                        elapsed = time.perf_counter() - start_time
-                        mb_per_sec = (bytes_read / (1024 * 1024)) / elapsed if elapsed > 0 else 0.0
-                        read_pbar.set_postfix({"throughput": f"{mb_per_sec:.2f} MB/s"})
-
             doc_parts.append(decoder.decode(b"", final=True))
             document = "".join(doc_parts)
             if document:
-                # A corpus file is one document. Preserve indentation, blank lines,
-                # and trailing whitespace because they are meaningful training data.
-                corpus.append(document)
-    finally:
-        if read_pbar is not None:
-            read_pbar.close()
+                yield document
 
-    if not corpus:
+    if is_streaming:
+        if total_bytes == 0:
+            print("Error: Corpus is empty.", file=sys.stderr)
+            return 1
+    elif not corpus:
         print("Error: Corpus is empty.", file=sys.stderr)
         return 1
 
-    _print_msg(f"Training Caliper tokenizer on {len(corpus)} documents (Target Vocab: {args.vocab_size})...")
+    _print_msg(f"Training Caliper tokenizer on {len(args.corpus)} corpus files (Target Vocab: {args.vocab_size})...")
     tok = CustomTokenizer.train_from_corpus(
-        corpus=corpus,
+        corpus=_corpus_doc_stream() if is_streaming else corpus,
         target_vocab_size=args.vocab_size,
         ranking_strategy=args.ranking_strategy,
         adaptive_multiplier=args.adaptive_multiplier,
@@ -143,6 +180,8 @@ def train_command(args: argparse.Namespace) -> int:
         preset=args.preset,
         compress_indents=args.compress_indents,
         verbose=args.verbose,
+        streaming=is_streaming,
+        chunk_size_bytes=chunk_size_bytes,
     )
 
     if args.superbpe_merges > 0:
@@ -476,6 +515,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--compress-indents", action="store_true", help="Enable whitespace indentation compression")
     p_train.add_argument("--no-byte-fallback", action="store_true", help="Disable UTF-8 byte fallback")
     p_train.add_argument("--no-progress", action="store_true", help="Disable dynamic progress indicators")
+    p_train.add_argument(
+        "--streaming",
+        action="store_true",
+        help="Enable disk-backed external chunk counter for TB-scale out-of-core training",
+    )
+    p_train.add_argument(
+        "--chunk-size-mb",
+        type=int,
+        default=500,
+        help="In-memory chunk buffer size in MB before spilling to disk (default: 500)",
+    )
     p_train.add_argument("-v", "--verbose", action="store_true", help="Verbose training progress output")
     p_train.set_defaults(func=train_command)
 
