@@ -227,6 +227,7 @@ class TestBinaryMmapModel(unittest.TestCase):
             b'{"pre_tokenizer": []}',
             b'{"normalizer": {"lowercase": "false"}}',
             b'{"pre_tokenizer": {"digit_chunking": "invalid"}}',
+            b'{"pre_tokenizer": {"digit_chunk_size": true}}',
         ]
         for payload in test_payloads:
             with tempfile.TemporaryDirectory() as tmpdir:

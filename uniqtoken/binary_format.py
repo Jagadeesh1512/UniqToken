@@ -246,7 +246,7 @@ def load_binary(file_path: Union[str, Path], use_mmap: bool = True) -> CustomTok
         if (
             "digit_chunk_size" in pre_cfg
             and pre_cfg["digit_chunk_size"] is not None
-            and not isinstance(pre_cfg["digit_chunk_size"], int)
+            and (isinstance(pre_cfg["digit_chunk_size"], bool) or not isinstance(pre_cfg["digit_chunk_size"], int))
         ):
             raise ValueError("Corrupted binary model: pre_tokenizer.digit_chunk_size must be an int or None")
         if "digit_chunking" in pre_cfg and pre_cfg["digit_chunking"] not in ("block3", "single", "greedy"):
