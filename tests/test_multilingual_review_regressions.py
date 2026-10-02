@@ -4,8 +4,11 @@ from collections import Counter
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import random
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -52,6 +55,32 @@ def exhaustive_global_merges(model, chunks, limit):
 
 
 class MultilingualReviewRegressions(unittest.TestCase):
+    def test_native_training_is_identical_across_processes(self):
+        script = """
+from dataclasses import asdict
+import hashlib, json
+from benchmarks.multilingual_merge_analysis import MultilingualMergeExperiment
+experiment = MultilingualMergeExperiment(target_vocab=650, merge_reserve=50)
+train, validation = experiment.build_canonical_splits()
+results = experiment.run_full_experiment(train, validation)
+payload = json.dumps({name: asdict(result) for name, result in results.items()}, sort_keys=True).encode()
+print('DIGEST=' + hashlib.sha256(payload).hexdigest())
+"""
+        digests = []
+        for seed in ("1", "2"):
+            environment = {**os.environ, "PYTHONHASHSEED": seed}
+            result = subprocess.run(
+                [sys.executable, "-c", script], capture_output=True, text=True, env=environment, check=True
+            )
+            digests.append(next(line for line in result.stdout.splitlines() if line.startswith("DIGEST=")))
+        self.assertEqual(*digests)
+
+    def test_retained_artifact_receipt_matches_published_bytes(self):
+        directory = Path(__file__).resolve().parents[1] / "benchmarks/multilingual_merges/issue88"
+        receipt = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        for name, expected in receipt["artifacts"].items():
+            self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), expected, name)
+
     def test_normalized_source_counts_actual_spaces(self):
         self.assertEqual(MultilingualMergeExperiment().normalized_source("a b"), "a b")
 
