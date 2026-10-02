@@ -188,6 +188,24 @@ class TestMultilingualMergeSelection(unittest.TestCase):
         val_strata = {r.stratum for r in val_records}
         self.assertEqual(train_strata, val_strata)
 
+    def test_strata_alpha_one_recovers_global_scoring(self) -> None:
+        """Balanced SuperBPE with strata_alpha=1.0 must match Global SuperBPE merges exactly."""
+        chunks = ["a b c d", "e f g h", "a b e f", "a c e g"] * 10
+        strata = ["lang:en", "lang:es", "lang:fr", "lang:de"] * 10
+
+        cem_global = CrossEntropyMerging(max_merges=3, scoring_strategy="global")
+        cem_global.optimize(self.model, chunks, strata=strata)
+
+        cem_balanced = CrossEntropyMerging(max_merges=3, scoring_strategy="balanced", strata_alpha=1.0)
+        cem_balanced.optimize(self.model, chunks, strata=strata)
+
+        self.assertEqual(len(cem_global.merges), len(cem_balanced.merges))
+        for m_g, m_b in zip(cem_global.merges, cem_balanced.merges):
+            self.assertEqual(m_g[0], m_b[0])  # a
+            self.assertEqual(m_g[1], m_b[1])  # b
+            self.assertEqual(m_g[2], m_b[2])  # merged
+            self.assertAlmostEqual(m_g[3], m_b[3], places=6)  # score
+
 
 if __name__ == "__main__":
     unittest.main()

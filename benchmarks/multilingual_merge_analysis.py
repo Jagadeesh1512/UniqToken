@@ -558,8 +558,10 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
         alt_alloc = alt_res.dominance_summary.get("strata_allocation", {})
         top_global_stratum = max(g_alloc, key=lambda k: g_alloc[k]) if g_alloc else None
         gain_stratum = None
-        max_gain = -1
+        max_gain = 0
         for st, c_cnt in alt_alloc.items():
+            if st == top_global_stratum:
+                continue
             diff = c_cnt - g_alloc.get(st, 0)
             if diff > max_gain:
                 max_gain = diff

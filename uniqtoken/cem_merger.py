@@ -347,9 +347,10 @@ class CrossEntropyMerging:
                         continue
                 if sc_curr >= self.max_score:
                     continue
-                # If score drifted and is now worse than another item in heap, re-push and continue
-                if heap and sc_curr > heap[0][0]:
-                    heapq.heappush(heap, (sc_curr, -cur_f, lp_hat_curr, a, b))
+                # If candidate rank drifted and is now worse than another item in heap, re-push and continue
+                cand_entry = (sc_curr, -cur_f, lp_hat_curr, a, b)
+                if heap and cand_entry > heap[0]:
+                    heapq.heappush(heap, cand_entry)
                     continue
 
                 best_score = sc_curr

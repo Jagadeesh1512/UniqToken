@@ -7,7 +7,7 @@
 ### Key Empirical Findings
 1. **Disproportionate Dominant-Stratum Concentration in Global Scoring**: Under standard frequency-driven CEM (`Global_SuperBPE`), **98.0%** of learned merges are concentrated (>=90% of occurrences) in a single dominant stratum, resulting in an allocation Herfindahl-Hirschman Index (HHI) of **0.3056** across **5** represented strata.
 2. **Broader Multilingual Diversity**: Stratum-balanced and coverage-aware scoring expand representation to **5** language strata (with coverage-aware dropping single-stratum concentration to **96.0%**), unlocking productive merges for tail languages that received fewer or 0 merges under global scoring.
-3. **Objective Trade-off (No Global Superiority Claim)**: Multilingual-aware scoring dynamically reallocates capacity to underrepresented languages (e.g. es merges increasing from 15 to 33), while trading off merge capacity previously concentrated in the dominant stratum (en merges adjusting from 21 to 0). This empirically confirms that multilingual-aware scoring represents an **inductive capacity-allocation trade-off** rather than a free lunch or strict global Pareto dominance.
+3. **Objective Trade-off (No Global Superiority Claim)**: Multilingual-aware scoring dynamically reallocates capacity to underrepresented languages (e.g. es merges increasing from 15 to 34), while trading off merge capacity previously concentrated in the dominant stratum (en merges adjusting from 21 to 0). This empirically confirms that multilingual-aware scoring represents an **inductive capacity-allocation trade-off** rather than a free lunch or strict global Pareto dominance.
 
 ## 2. Vocabulary & Merge Allocation Across Strata
 
