@@ -7,7 +7,9 @@ measured tables, with no fixed percentage improvements or universal winner.
 ## Shared Inputs and Matched Budgets
 
 All models learn from identical generated synthetic documents, seed 42 and
-40 documents per language/domain. This generator is not a real corpus.
+40 requested documents per language/domain, of which the generator's first
+80 percent form training (256 documents in the retained run). This generator
+is not a real corpus.
 The existing research training factory checks exactly 1024 IDs in every model,
 including the same four controls and all 256 byte fallback IDs.
 
@@ -33,7 +35,8 @@ first 256 raw Unicode characters. Original FLORES validation documents are label
 labeled `train_probe/`: unseen by these newly synthetic-trained models, but not
 original Phase A held-out validation. Dataset assignments and Phase A models are
 unchanged. Synthetic training/probe normalized overlap is rejected before training.
-IDs, full source document hashes, excerpt spans and normalized excerpt hashes
+IDs, full source document hashes, dataset URLs, revisions, source license metadata,
+excerpt spans and normalized excerpt hashes
 are published. Prefix sampling and synthetic training limit generalizability.
 Without `--dataset`, only synthetic evidence is emitted.
 

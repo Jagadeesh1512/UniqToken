@@ -556,6 +556,7 @@ def load_frozen_probes(dataset_path: Path, per_stratum: int = 5, excerpt_chars: 
                     "domain": row["domain"],
                     "language": row["language"],
                     "source_document_sha256": research.digest(row["text"]),
+                    "source": row.get("source", {}),
                     "excerpt_raw_char_span": [0, len(text)],
                     "normalized_excerpt_sha256": research.digest(research.normalize(text)),
                     "text": text,

@@ -12,12 +12,38 @@ from benchmarks.boundary_fragmentation_analysis import (
     audit_tokenize,
     load_frozen_probes,
     train_all_tokenizers,
+    decode_piece_bytes,
+    export_all_artifacts,
 )
 from benchmarks import run_research_experiments as research
 from benchmarks.run_matched_budget_eval import generate_balanced_multilingual_corpus
 
 
 class BoundaryReviewRegressions(unittest.TestCase):
+    def test_existing_evidence_directory_cannot_be_overwritten(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(FileExistsError):
+                export_all_artifacts({}, {}, 1024, Path(temporary))
+
+    def test_every_published_audit_reconstructs_source_and_tiles_normalized_bytes(self):
+        directory = Path(__file__).resolve().parents[1] / "benchmarks/boundary_analysis/issue89"
+        records = [
+            json.loads(line)
+            for line in (directory / "span_audit_examples.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len(records), 558)
+        for record in records:
+            with self.subTest(model=record["tokenizer"], case=record["case_name"]):
+                source = record["normalized_text"].encode("utf-8")
+                self.assertEqual(b"".join(decode_piece_bytes(piece) for piece in record["tokens"]), source)
+                position = 0
+                for (start, end), (raw_start, raw_end) in zip(record["byte_spans"], record["char_spans"]):
+                    self.assertEqual(start, position)
+                    self.assertGreater(end, start)
+                    self.assertTrue(0 <= raw_start < raw_end <= len(record["text"]))
+                    position = end
+                self.assertEqual(position, len(source))
+
     def test_nfkc_expansion_retains_raw_source_envelopes(self):
         tokenizer = TokenizerAdapter("fixture", 260, lambda text: list(text))
         result = audit_tokenize(tokenizer, "\ufb01\u3000x")
