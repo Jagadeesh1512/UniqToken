@@ -1,0 +1,10 @@
+{
+  "status": "complete",
+  "artifacts": {
+    "REPORT.md": "ccacb70ce7260d798f110c7593543d711126495980f7c7f95c09a4e18be7205e",
+    "synthetic_diagnostics.csv": "bc6b3ca5213818b6160e6ba0f591d9cd1eae47f853bfd4d8182d2efa152b438f",
+    "real_corpus_summary.csv": "c0b0f1b85a6f3300ea32376bc29a0e1d1519a3173cca4177f3cf07610f92b7ce",
+    "span_audit_examples.jsonl": "451a7cc40bf1bedeb40d45dbd66c76af5ec331d051bfb60ad3839eb6d50e759a",
+    "results.json": "bc616aaaeca43e25e0a8cb0d8e1aac8c92665a4efd7579594e6e5bc0d8214075"
+  }
+}
