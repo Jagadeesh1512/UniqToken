@@ -84,6 +84,10 @@ class CrossEntropyMerging:
             raise ValueError(
                 f"Unknown scoring_strategy {scoring_strategy!r}; must be 'global', 'balanced', or 'coverage_aware'"
             )
+        if not math.isfinite(strata_alpha) or not 0.0 <= strata_alpha <= 1.0:
+            raise ValueError("strata_alpha must be finite and between zero and one")
+        if not math.isfinite(coverage_weight) or coverage_weight < 0.0:
+            raise ValueError("coverage_weight must be finite and non-negative")
         self.max_merges = max_merges
         self.max_score = max_score
         self.verbose = verbose
@@ -296,9 +300,9 @@ class CrossEntropyMerging:
             if not pair_counts or total_pairs <= 0:
                 break
 
-            # In stratified scoring modes, stratum totals change after each merge,
-            # affecting candidate rankings across all strata. Refresh candidate heap.
-            if self.scoring_strategy in ("balanced", "coverage_aware"):
+            # Every objective depends on changing pair totals, including global
+            # scores for pairs in streams untouched by the previous merge.
+            if self.scoring_strategy in ("global", "balanced", "coverage_aware"):
                 heap = []
                 for (a_c, b_c), f_c in pair_counts.items():
                     if f_c < 2:
@@ -369,7 +373,7 @@ class CrossEntropyMerging:
             st_freqs = dict(pair_strata_counts.get((a, b), {}))
             if not st_freqs:
                 st_freqs = {"all": pair_count}
-            dom_stratum = max(st_freqs, key=lambda k: st_freqs[k])
+            dom_stratum = min(st_freqs, key=lambda k: (-st_freqs[k], k))
             dom_count = st_freqs[dom_stratum]
             dom_ratio = dom_count / max(pair_count, 1)
 
@@ -382,7 +386,7 @@ class CrossEntropyMerging:
                     total_frequency=pair_count,
                     strata_frequencies=st_freqs,
                     dominant_stratum=dom_stratum,
-                    dominance_ratio=round(dom_ratio, 4),
+                    dominance_ratio=dom_ratio,
                 )
             )
 

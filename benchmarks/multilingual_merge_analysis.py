@@ -31,6 +31,8 @@ from uniqtoken.cem_merger import CrossEntropyMerging, MergeRecord, SuperBPE
 from uniqtoken.pre_tokenizer import Normalizer, RegexPreTokenizer
 from uniqtoken.tokenizer import CustomTokenizer
 from uniqtoken.unigram_trainer import UnigramModel
+from benchmarks.analyze_tokenizer_failures import guard_split_paths
+from benchmarks import run_research_experiments as research
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,7 @@ class StratumValidationMetrics:
     bytes_per_token: float
     chars_per_token: float
     fertility: float
-    merges_fired: int
+    merged_token_emissions: int
     tokens_saved: int
     fallback_tokens: int
     fallback_rate_pct: float
@@ -188,12 +190,30 @@ class MultilingualMergeExperiment:
             normalizer: Optional custom normalizer for text preprocessing.
             pre_tokenizer: Optional custom pre-tokenizer for regex splitting.
         """
-        if target_vocab <= merge_reserve:
+        if merge_reserve < 0 or target_vocab - merge_reserve < 260:
             raise ValueError(f"target_vocab ({target_vocab}) must exceed merge_reserve ({merge_reserve})")
         self.target_vocab = target_vocab
         self.merge_reserve = merge_reserve
         self.normalizer = normalizer or Normalizer()
         self.pre_tokenizer = pre_tokenizer or RegexPreTokenizer()
+        self.input_provenance: Dict[str, Any] = {"kind": "canonical_controlled_fixture"}
+
+    def normalized_source(self, text: str) -> str:
+        """Return normalized source text with source spaces, not metaspace spelling."""
+        normalized = self.normalizer.normalize(text)
+        return self.normalizer.restore_escaped_metaspace(normalized.replace(self.normalizer.space_char, " "))
+
+    def validate_assignments(
+        self, train_records: Sequence[DocumentRecord], val_records: Sequence[DocumentRecord]
+    ) -> None:
+        if not train_records or not val_records:
+            raise ValueError("nonempty training and validation assignments required")
+        train_texts = {self.normalized_source(r.text) for r in train_records}
+        val_texts = {self.normalized_source(r.text) for r in val_records}
+        if train_texts.intersection(val_texts) or {r.doc_id for r in train_records}.intersection(
+            r.doc_id for r in val_records
+        ):
+            raise ValueError("Train/Validation leakage detected after normalization")
 
     def build_canonical_splits(
         self,
@@ -208,8 +228,6 @@ class MultilingualMergeExperiment:
         """
         train_records: List[DocumentRecord] = []
         val_records: List[DocumentRecord] = []
-
-        normalizer = self.normalizer
 
         for lang, (domain, full_text) in CANONICAL_MULTILINGUAL_DATA.items():
             paragraphs = [p.strip() for p in full_text.strip().split("\n") if p.strip()]
@@ -226,7 +244,7 @@ class MultilingualMergeExperiment:
             repeat_count = int(skew_factor) if lang in ("en", "es") else 1
             for rep in range(repeat_count):
                 for p_idx, text in enumerate(train_paras):
-                    norm = normalizer.normalize(text)
+                    norm = self.normalized_source(text)
                     train_records.append(
                         DocumentRecord(
                             doc_id=f"train_{lang}_{rep}_{p_idx}",
@@ -240,7 +258,7 @@ class MultilingualMergeExperiment:
 
             # Validation is held-out and balanced (1x exposure, disjoint sentences)
             for p_idx, text in enumerate(val_paras):
-                norm = normalizer.normalize(text)
+                norm = self.normalized_source(text)
                 val_records.append(
                     DocumentRecord(
                         doc_id=f"val_{lang}_{p_idx}",
@@ -253,11 +271,7 @@ class MultilingualMergeExperiment:
                 )
 
         # Strict leakage verification
-        train_texts = {r.text for r in train_records}
-        val_texts = {r.text for r in val_records}
-        leakage = train_texts.intersection(val_texts)
-        if leakage:
-            raise ValueError(f"Train/Validation leakage detected: {len(leakage)} overlapping documents")
+        self.validate_assignments(train_records, val_records)
 
         return train_records, val_records
 
@@ -278,19 +292,28 @@ class MultilingualMergeExperiment:
             raise ValueError("Dataset manifest must define a 'test' split for research integrity verification")
         if "train" not in splits or "validation" not in splits:
             raise ValueError("Dataset manifest must define 'train' and 'validation' splits")
+        paths = guard_split_paths(path, manifest)
+        for split in ("train", "validation"):
+            if research.file_hash(paths[split]) != splits[split].get("sha256"):
+                raise ValueError(f"frozen {split} file hash mismatch")
+        self.input_provenance = {
+            "kind": "frozen_manifest",
+            "manifest_sha256": research.file_hash(path),
+            "splits": {split: splits[split]["sha256"] for split in ("train", "validation", "test")},
+            "test_access": "forbidden_not_opened_or_hashed",
+        }
 
         # Load train and validation rows only
         def load_rows(split_name: str) -> List[DocumentRecord]:
             """Loads and normalizes document records from a dataset split."""
-            entry = splits[split_name]
-            file_path = path.parent / entry["path"]
+            file_path = paths[split_name]
             records: List[DocumentRecord] = []
             with open(file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     if not line.strip():
                         continue
                     item = json.loads(line)
-                    norm = self.normalizer.normalize(item["text"])
+                    norm = self.normalized_source(item["text"])
                     records.append(
                         DocumentRecord(
                             doc_id=item["id"],
@@ -307,17 +330,15 @@ class MultilingualMergeExperiment:
         val_records = load_rows("validation")
 
         # Verify disjointness
-        train_digests = {r.text for r in train_records}
-        val_digests = {r.text for r in val_records}
-        leakage = train_digests.intersection(val_digests)
-        if leakage:
-            raise ValueError(f"Train/Validation leakage detected: {len(leakage)} overlapping documents")
+        self.validate_assignments(train_records, val_records)
 
         return train_records, val_records
 
-    def train_base_unigram(self, train_records: Sequence[DocumentRecord]) -> CustomTokenizer:
+    def train_base_unigram(
+        self, train_records: Sequence[DocumentRecord], budget: Optional[int] = None
+    ) -> CustomTokenizer:
         """Trains base Unigram model on training documents with budget = target_vocab - merge_reserve."""
-        base_budget = self.target_vocab - self.merge_reserve
+        base_budget = self.target_vocab - self.merge_reserve if budget is None else budget
         texts = [r.text for r in train_records]
         tok = CustomTokenizer.train_from_corpus(
             texts,
@@ -399,16 +420,19 @@ class MultilingualMergeExperiment:
         for stratum, docs in sorted(grouped.items()):
             domain, lang = stratum.split(":", 1)
             raw_bytes = sum(d.raw_utf8_bytes for d in docs)
-            norm_bytes = sum(d.normalized_utf8_bytes for d in docs)
-            chars = sum(len(d.text) for d in docs)
-            words = max(sum(len(d.text.split()) for d in docs), 1)
+            normalized = [self.normalized_source(d.text) for d in docs]
+            norm_bytes = sum(len(text.encode("utf-8")) for text in normalized)
+            chars = sum(len(text) for text in normalized)
+            words = max(sum(len(text.split()) for text in normalized), 1)
 
             total_tokens = 0
             fallback_count = 0
             merges_fired = 0
 
-            for d in docs:
+            for d, normalized_text in zip(docs, normalized):
                 tokens = tok.encode(d.text)
+                if tok.decode_tokens(tokens) != normalized_text:
+                    raise ValueError("tokenizer did not reconstruct normalized validation source")
                 total_tokens += len(tokens)
                 for t in tokens:
                     if ByteFallbackEngine.is_byte_token(t):
@@ -416,7 +440,7 @@ class MultilingualMergeExperiment:
                     if t in learned_merges:
                         merges_fired += 1
 
-            bpt = raw_bytes / max(total_tokens, 1)
+            bpt = norm_bytes / max(total_tokens, 1)
             cpt = chars / max(total_tokens, 1)
             fert = total_tokens / words
             fb_pct = (fallback_count / max(total_tokens, 1)) * 100.0
@@ -440,7 +464,7 @@ class MultilingualMergeExperiment:
                 bytes_per_token=round(bpt, 3),
                 chars_per_token=round(cpt, 3),
                 fertility=round(fert, 3),
-                merges_fired=merges_fired,
+                merged_token_emissions=merges_fired,
                 tokens_saved=tokens_saved,
                 fallback_tokens=fallback_count,
                 fallback_rate_pct=round(fb_pct, 2),
@@ -460,8 +484,10 @@ class MultilingualMergeExperiment:
         3. Multilingual-Aware CEM (Stratum-Balanced SuperBPE)
         4. Multilingual-Aware CEM (Coverage-Aware SuperBPE)
         """
+        self.validate_assignments(train_records, val_records)
         base_tok = self.train_base_unigram(train_records)
-        base_metrics = self.evaluate_tokenizer_on_strata(base_tok, val_records, None)
+        baseline_tok = self.train_base_unigram(train_records, budget=self.target_vocab)
+        base_metrics = self.evaluate_tokenizer_on_strata(baseline_tok, val_records, None)
         baseline_tokens = {st: m.token_count for st, m in base_metrics.items()}
 
         conditions: List[Tuple[str, str, Dict[str, Any]]] = [
@@ -475,7 +501,7 @@ class MultilingualMergeExperiment:
 
         for cond_name, strategy, kwargs in conditions:
             if strategy == "none":
-                tok = base_tok
+                tok = baseline_tok
                 cem = None
                 dom_summary = {
                     "total_merges": 0,
@@ -501,13 +527,15 @@ class MultilingualMergeExperiment:
                 )
 
             agg_tokens = sum(m.token_count for m in strata_metrics.values())
-            agg_bytes = sum(m.raw_bytes for m in strata_metrics.values())
+            if len(tok.model.vocab) != self.target_vocab:
+                raise ValueError(f"{cond_name}: exact vocabulary budget not reached")
+            agg_bytes = sum(m.normalized_bytes for m in strata_metrics.values())
             agg_bpt = round(agg_bytes / max(agg_tokens, 1), 3)
 
             results[cond_name] = ConditionResult(
                 condition_name=cond_name,
                 scoring_strategy=strategy,
-                target_vocab_size=self.target_vocab if strategy != "none" else (self.target_vocab - self.merge_reserve),
+                target_vocab_size=self.target_vocab,
                 actual_vocab_size=len(tok.model.vocab),
                 merge_count=len(cem.merges) if cem else 0,
                 dominance_summary=dom_summary,
@@ -551,7 +579,6 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
 
         c_strata = coverage_res.dominance_summary.get("strata_represented_count", 0) if coverage_res else 0
         c_conc = coverage_res.dominance_summary.get("concentrated_merges_percent", 0.0) if coverage_res else 0.0
-        max_strata = max(b_strata, c_strata)
 
         # Identify dominant and improved tail strata dynamically from current results
         g_alloc = global_res.dominance_summary.get("strata_allocation", {})
@@ -568,8 +595,7 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
                 gain_stratum = st
 
         tradeoff_desc = (
-            "3. **Objective Trade-off (No Global Superiority Claim)**: Multilingual-aware scoring dynamically reallocates "
-            "capacity to underrepresented languages"
+            "3. **Allocation Changes in the Balanced Condition**: The recorded allocation may shift between strata"
         )
         if gain_stratum and top_global_stratum:
             gain_lang = gain_stratum.split(":", 1)[-1]
@@ -585,19 +611,12 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
             )
         else:
             tradeoff_desc += ". "
-        tradeoff_desc += (
-            "This empirically confirms that multilingual-aware scoring represents an **inductive capacity-allocation trade-off** "
-            "rather than a free lunch or strict global Pareto dominance."
-        )
+        tradeoff_desc += "Allocation is a descriptive count, not evidence of a causal validation benefit or a globally best tokenizer."
 
         lines.extend(
             [
-                f"1. **Disproportionate Dominant-Stratum Concentration in Global Scoring**: Under standard frequency-driven "
-                f"CEM (`Global_SuperBPE`), **{g_conc:.1f}%** of learned merges are concentrated (>=90% of occurrences) "
-                f"in a single dominant stratum, resulting in an allocation Herfindahl-Hirschman Index (HHI) of **{g_hhi:.4f}** across **{g_strata}** represented strata.",
-                f"2. **Broader Multilingual Diversity**: Stratum-balanced and coverage-aware scoring expand representation to "
-                f"**{max_strata}** language strata (with coverage-aware dropping single-stratum concentration to **{c_conc:.1f}%**), "
-                f"unlocking productive merges for tail languages that received fewer or 0 merges under global scoring.",
+                f"1. **Global Merge Concentration**: **{g_conc:.1f}%** of learned merges each have >=90% of their pair occurrences in some single stratum. This is not the percentage allocated to one language. Global dominant-stratum allocation has HHI **{g_hhi:.4f}** across **{g_strata}** represented strata.",
+                f"2. **Alternative Allocation**: Balanced scoring represents **{b_strata}** strata (HHI **{b_hhi:.4f}**, concentrated merges **{b_conc:.1f}%**); coverage-aware scoring represents **{c_strata}** strata (concentrated merges **{c_conc:.1f}%**). Representation and concentration may improve or worsen relative to global scoring; both outcomes are retained.",
                 tradeoff_desc,
             ]
         )
@@ -607,7 +626,7 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
             "",
             "## 2. Vocabulary & Merge Allocation Across Strata",
             "",
-            "| Condition | Strategy | Learned Merges | Strata Represented | Concentrated Merges (>=90%) | HHI Concentration (lower=better) |",
+            "| Condition | Strategy | Learned Merges | Strata Represented | Concentrated Merges (>=90%) | HHI of Dominant-Stratum Allocation |",
             "| :--- | :---: | :---: | :---: | :---: | :---: |",
         ]
     )
@@ -645,6 +664,8 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
             "",
             "## 3. Disjoint Validation Compression Comparison",
             "",
+            "All four conditions use the same total vocabulary budget. Merge conditions share a smaller seed vocabulary and reserve the remaining slots for merges; the full-budget Unigram baseline has no merge reserve. Bytes/token and characters/token use normalized source, not metaspace spelling. Whitespace-field fertility is descriptive and is not a universal cross-script linguistic metric.",
+            "",
             "| Language | Metric | Unigram Baseline | Global SuperBPE | Balanced SuperBPE | CoverageAware SuperBPE |",
             "| :--- | :---: | :---: | :---: | :---: | :---: |",
         ]
@@ -665,11 +686,11 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
 
         lines.append(f"| **{lang}** | Bytes/Token (higher=better) | {u_bpt} | {g_bpt} | {b_bpt} | {c_bpt} |")
 
-        u_fired = u_m.merges_fired if u_m else 0
-        g_fired = g_m.merges_fired if g_m else 0
-        b_fired = b_m.merges_fired if b_m else 0
-        c_fired = c_m.merges_fired if c_m else 0
-        lines.append(f"| | Merges Fired | {u_fired} | {g_fired} | {b_fired} | {c_fired} |")
+        u_fired = u_m.merged_token_emissions if u_m else 0
+        g_fired = g_m.merged_token_emissions if g_m else 0
+        b_fired = b_m.merged_token_emissions if b_m else 0
+        c_fired = c_m.merged_token_emissions if c_m else 0
+        lines.append(f"| | Final Learned-Merge Token Emissions | {u_fired} | {g_fired} | {b_fired} | {c_fired} |")
 
     exact_budgets = all(c.actual_vocab_size == c.target_vocab_size for c in results.values())
     if exact_budgets:
@@ -688,11 +709,12 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
             "",
             "## 4. Research Integrity & Verification Ledger",
             "",
-            "- **Zero Test-Set Access**: Only the training and validation splits were used. The held-out test split was verified present in metadata and remained strictly untouched.",
-            "- **Zero Train/Validation Leakage**: All training documents and validation documents were strictly disjoint (verified 0 overlapping strings).",
+            "- **Zero Test-Set Access**: Only training and validation were used. For manifest inputs, test is checked only as declared path/hash metadata and is never opened or hashed; the canonical controlled fixture has no test data.",
+            "- **Zero Train/Validation Leakage**: Normalized training/validation text and document-ID overlap is rejected before training. Training repetitions within one split are intentional exposure weighting.",
             "- **No Hard-Coded Token Lists**: Scoring functions operate purely on empirical stratum statistics without language-specific token tables or manual regex filters.",
             f"- **Budget Adherence**: {budget_str}",
-            f"- **Lossless Byte Fallback**: Tokenization maintains 100% lossless coverage without unk tokens (mean byte fallback rate: {mean_fb:.1f}%, max: {max_fb:.1f}% on unrepresented scripts).",
+            f"- **Normalized Round Trips**: Every evaluated document reconstructs normalized source exactly (mean stratum byte fallback rate: {mean_fb:.1f}%, max: {max_fb:.1f}%). This does not claim raw-byte reversibility under NFKC or a zero fallback rate.",
+            "- **Scope**: The retained canonical run is a small controlled fixture, not a measurement of frozen Phase A models or real-world multilingual allocation. No LM is trained, no frozen artifacts are modified, and no causal or global superiority claim is made.",
         ]
     )
 
@@ -731,11 +753,13 @@ def export_csv_tables(
                 "stratum",
                 "language",
                 "raw_bytes",
+                "normalized_bytes",
+                "normalized_characters",
                 "tokens",
                 "bytes_per_token",
                 "chars_per_token",
                 "fertility",
-                "merges_fired",
+                "merged_token_emissions",
                 "tokens_saved",
                 "fallback_pct",
             ]
@@ -748,11 +772,13 @@ def export_csv_tables(
                         st,
                         sm.language,
                         sm.raw_bytes,
+                        sm.normalized_bytes,
+                        sm.char_count,
                         sm.token_count,
                         sm.bytes_per_token,
                         sm.chars_per_token,
                         sm.fertility,
-                        sm.merges_fired,
+                        sm.merged_token_emissions,
                         sm.tokens_saved,
                         sm.fallback_rate_pct,
                     ]
@@ -789,6 +815,13 @@ def run_cli() -> None:
     args = parser.parse_args()
 
     output_path = Path(args.output)
+    if output_path.exists():
+        raise ValueError("output must be a new directory; existing evidence is never overwritten")
+    if args.dataset and output_path.resolve().is_relative_to(Path(args.dataset).resolve().parent):
+        raise ValueError("output must be outside the frozen dataset directory")
+    identity = research.runtime_identity()
+    if identity["working_tree_dirty"]:
+        raise ValueError("commit experiment code before recording research evidence")
     experiment = MultilingualMergeExperiment(target_vocab=args.budget, merge_reserve=args.merges)
 
     if args.dataset:
@@ -801,6 +834,17 @@ def run_cli() -> None:
     print(f"Loaded {len(train_records)} training documents and {len(val_records)} validation documents.")
     print("Running comparative merge experiment across 4 conditions...")
     results = experiment.run_full_experiment(train_records, val_records)
+    current_identity = research.runtime_identity()
+    if current_identity != identity:
+        raise ValueError("experiment source/runtime changed during analysis")
+    if args.dataset:
+        manifest_path = Path(args.dataset)
+        if research.file_hash(manifest_path) != experiment.input_provenance["manifest_sha256"]:
+            raise ValueError("dataset manifest changed during analysis")
+        paths = guard_split_paths(manifest_path, research.read_json(manifest_path))
+        for split in ("train", "validation"):
+            if research.file_hash(paths[split]) != experiment.input_provenance["splits"][split]:
+                raise ValueError(f"{split} data changed during analysis")
 
     report_md = format_markdown_report(results)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -825,7 +869,36 @@ def run_cli() -> None:
         }
 
     serialized = {k: serialize_cond(v) for k, v in results.items()}
-    (output_path / "results.json").write_text(json.dumps(serialized, indent=2), encoding="utf-8")
+    payload = {
+        "metadata": {
+            "identity": identity,
+            "inputs": experiment.input_provenance,
+            "configuration": {
+                "target_vocab": args.budget,
+                "merge_reserve": args.merges,
+                "skew_factor": 8.0,
+                "normalizer": vars(experiment.normalizer),
+            },
+            "assignments": {
+                split: {
+                    "documents": len(records),
+                    "normalized_texts_sha256": research.digest([experiment.normalized_source(r.text) for r in records]),
+                    "document_ids_sha256": research.digest([r.doc_id for r in records]),
+                }
+                for split, records in (("train", train_records), ("validation", val_records))
+            },
+            "test_access": "forbidden_not_opened_or_hashed",
+        },
+        "conditions": serialized,
+    }
+    research.write_new_json(output_path / "results.json", payload)
+    research.write_new_json(
+        output_path / "manifest.json",
+        {
+            "status": "complete",
+            "artifacts": {p.name: research.file_hash(p) for p in sorted(output_path.iterdir()) if p.is_file()},
+        },
+    )
 
     print("\n" + "=" * 80)
     print("MULTILINGUAL MERGE SELECTION EXPERIMENT COMPLETE")
