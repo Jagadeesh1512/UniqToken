@@ -55,6 +55,8 @@ class BoundaryReviewRegressions(unittest.TestCase):
     def test_all_matched_models_preserve_whitespace_and_share_normalized_source(self):
         training, _ = generate_balanced_multilingual_corpus(num_docs_per_lang=40, seed=42)
         adapters = train_all_tokenizers(training, 1024)
+        self.assertGreater(adapters["Boundary-BPE"].metadata["learned_merges"], 0)
+        self.assertEqual(adapters["UT-SuperBPE"].metadata["learned_merges"], 102)
         for adapter in adapters.values():
             self.assertEqual(adapter.vocab_size, 1024)
             for text in ("    x\t\t  y\n", "\ufb01\u3000x", "\u2014"):

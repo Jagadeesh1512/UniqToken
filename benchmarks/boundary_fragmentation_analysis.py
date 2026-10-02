@@ -517,7 +517,7 @@ def train_all_tokenizers(train_docs: List[str], target_vocab: int = 1024) -> Dic
                     "vocabulary_sha256": research.digest(tok.vocab),
                     "scores_or_merges_sha256": research.digest(scores),
                     "actual_vocab_size": len(tok.vocab),
-                    "learned_merges": tok.merges,
+                    "learned_merges": len(tok.model.merges) if name == "boundary_bpe" else tok.merges,
                 },
             )
     return adapters
