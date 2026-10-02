@@ -27,13 +27,23 @@ class ByteFallbackEngine:
     """
 
     BYTE_TOKEN_PATTERN = re.compile(r"^<0x([0-9A-Fa-f]{2})>$")
+    MULTI_BYTE_TOKEN_PATTERN = re.compile(r"^(?:<0x[0-9A-Fa-f]{2}>)+$")
 
     @classmethod
     def is_byte_token(cls, token: str) -> bool:
-        # ponytail: fast string pre-check avoids regex for 99% non-byte tokens; upgrade to interned set if vocab>100k
-        if len(token) != 6 or not token.startswith("<0x") or token[-1] != ">":
+        if not token.startswith("<0x") or token[-1] != ">":
             return False
-        return bool(cls.BYTE_TOKEN_PATTERN.match(token))
+        if len(token) == 6:
+            return bool(cls.BYTE_TOKEN_PATTERN.match(token))
+        return bool(cls.MULTI_BYTE_TOKEN_PATTERN.match(token))
+
+    @classmethod
+    def token_to_bytes(cls, token: str) -> bytes:
+        """Extracts underlying bytes from a single or multi-byte token."""
+        matches = re.findall(r"<0x([0-9A-Fa-f]{2})>", token)
+        if matches and len("".join(f"<0x{m}>" for m in matches)) == len(token):
+            return bytes(int(m, 16) for m in matches)
+        raise ValueError(f"Token {token!r} is not a valid byte fallback token")
 
     @classmethod
     def byte_to_token(cls, byte_val: int) -> str:
@@ -86,8 +96,7 @@ class ByteFallbackEngine:
 
         for tok in tokens:
             if cls.is_byte_token(tok):
-                byte_val = cls.token_to_byte(tok)
-                byte_buffer.append(byte_val)
+                byte_buffer.extend(cls.token_to_bytes(tok))
             else:
                 flush_bytes()
                 output_segments.append(tok.replace(space_char, " "))
