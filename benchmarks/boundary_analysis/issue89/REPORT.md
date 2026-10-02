@@ -1,212 +1,123 @@
-# Research Report: Whitespace and Boundary Fragmentation Analysis (Issue #89)
+# Whitespace and Boundary Fragmentation Analysis (Issue #89)
 
-## 1. Executive Summary & Research Scope
+Three tokenizer conditions have exactly 1024 vocabulary IDs, including
+the same four controls and all 256 byte fallback IDs. Each learns from the same
+controlled synthetic training documents. These are small transfer diagnostics,
+not models trained on the frozen real corpus and not a ranking of architectures.
 
-**Core Question**: *How do subword tokenizers differ in their treatment of token boundaries, and to what extent does boundary isolation create artificial fragmentation across whitespace runs, punctuation, mixed alphanumeric strings, code symbols, and script transitions?*
+NFKC and Unicode space mapping are shared. Leading spaces, repeated spaces,
+tabs and newlines are preserved. Every scored encoding reconstructs normalized
+UTF-8 exactly; deleted whitespace is an error, not a compression improvement.
+Boundary-BPE isolates each whitespace character; SPM uses identity normalization
+after shared preprocessing, and UT uses its default pre-tokenizer and SuperBPE pass.
 
-This experiment rigorously benchmarks three architectures at matched vocabulary budget ($V = 1024$):
-1. **UT-SuperBPE**: Cross-Entropy Merging on Unigram base with cross-word merge capacity.
-2. **Boundary-BPE**: Byte-Pair Encoding strictly partitioned at whitespace boundaries (never merges across whitespace).
-3. **SentencePiece-Unigram**: Standard unigram model with byte fallback and leading-whitespace piece binding.
+## Synthetic Fixtures
 
-### Key Empirical Findings
-- **Whitespace Run Consolidation**: Under `Boundary-BPE`, indentation runs (e.g. 4-space, 8-space, tabs) are fragmented into multiple single-space tokens. In contrast, `UT-SuperBPE` compresses indentation runs into consolidated tokens, reducing whitespace excess fragments by **30–60%**.
-- **Code & Compound Operators**: `Boundary-BPE` and `UT-SuperBPE` efficiently capture multi-character code operators (`===`, `->`, `::`), whereas `SentencePiece` frequently fragments code symbols due to unigram penalty structures.
-- **Cross-Word Phrase Efficiency**: `UT-SuperBPE` learns high-utility cross-word phrases (`in the`, `of the`), achieving up to **10–15% higher bytes/token** on repetitive grammatical constructions without increasing single-word fragmentation.
-- **Script-Specific Boundary Nuance**: CJK and Indic scripts demonstrate that whitespace-word fertility is invalid as a cross-lingual metric. On non-segmenting CJK and virama-combining Indic scripts, UT-SuperBPE and SentencePiece achieve superior tokens/character compared to Boundary-BPE.
+| Category | Case | Tokens: BPE / SPM / UT | Bytes/token: BPE / SPM / UT |
+| --- | --- | --- | --- |
+| whitespace_runs | single_space | 9 / 9 / 9 | 1.222 / 1.222 / 1.222 |
+| whitespace_runs | double_space | 10 / 10 / 11 | 1.200 / 1.200 / 1.091 |
+| whitespace_runs | four_space_indent | 10 / 8 / 7 | 1.000 / 1.250 / 1.429 |
+| whitespace_runs | eight_space_indent | 21 / 20 / 17 | 1.238 / 1.300 / 1.529 |
+| whitespace_runs | tab_indentation | 16 / 15 / 21 | 1.500 / 1.600 / 1.143 |
+| whitespace_runs | mixed_whitespace_run | 21 / 18 / 18 | 1.190 / 1.389 / 1.389 |
+| whitespace_runs | padded_surrounding_whitespace | 16 / 18 / 17 | 1.250 / 1.111 / 1.176 |
+| punctuation_sequences | ellipsis_repeats | 27 / 29 / 30 | 1.370 / 1.276 / 1.233 |
+| punctuation_sequences | markdown_dividers | 17 / 18 / 17 | 1.353 / 1.278 / 1.353 |
+| punctuation_sequences | nested_brackets | 23 / 23 / 23 | 1.087 / 1.087 / 1.087 |
+| punctuation_sequences | multi_punctuation_emotive | 28 / 28 / 29 | 1.143 / 1.143 / 1.103 |
+| punctuation_sequences | operator_arrows | 22 / 19 / 25 | 1.273 / 1.474 / 1.120 |
+| mixed_alphanumeric | semver_version | 23 / 23 / 25 | 1.087 / 1.087 / 1.000 |
+| mixed_alphanumeric | hex_memory_address | 48 / 49 / 55 | 1.271 / 1.245 / 1.109 |
+| mixed_alphanumeric | system_identifiers | 42 / 43 / 45 | 1.238 / 1.209 / 1.156 |
+| mixed_alphanumeric | camel_case_identifiers | 31 / 31 / 31 | 1.258 / 1.258 / 1.258 |
+| mixed_alphanumeric | snake_case_identifiers | 25 / 30 / 32 | 1.560 / 1.300 / 1.219 |
+| mixed_alphanumeric | kebab_case_headers | 28 / 27 / 30 | 1.536 / 1.593 / 1.433 |
+| code_symbols | compound_assignment_operators | 39 / 36 / 35 | 1.000 / 1.083 / 1.114 |
+| code_symbols | strict_equality_and_logical | 36 / 32 / 32 | 1.000 / 1.125 / 1.125 |
+| code_symbols | bitwise_shift_operators | 38 / 37 / 39 | 1.079 / 1.108 / 1.051 |
+| code_symbols | cxx_scope_and_pointers | 39 / 36 / 43 | 1.256 / 1.361 / 1.140 |
+| code_symbols | rust_generics_and_returns | 45 / 46 / 44 | 1.200 / 1.174 / 1.227 |
+| code_symbols | comment_delimiters | 37 / 35 / 35 | 1.378 / 1.457 / 1.457 |
+| cross_word_merges | common_prepositional_phrases | 45 / 42 / 37 | 1.200 / 1.286 / 1.459 |
+| cross_word_merges | frequent_determiner_bigrams | 33 / 31 / 25 | 1.273 / 1.355 / 1.680 |
+| cross_word_merges | sentence_integration | 62 / 62 / 57 | 1.226 / 1.226 / 1.333 |
+| script_boundaries | latin_finnish_compounds | 45 / 45 / 52 | 1.356 / 1.356 / 1.173 |
+| script_boundaries | latin_spanish_inverted_punct | 42 / 41 / 42 | 1.190 / 1.220 / 1.190 |
+| script_boundaries | cjk_mandarin_unsegmented | 75 / 75 / 75 | 1.293 / 1.293 / 1.293 |
+| script_boundaries | cjk_japanese_mixed_scripts | 75 / 75 / 75 | 1.080 / 1.080 / 1.080 |
+| script_boundaries | indic_hindi_virama_conjuncts | 54 / 70 / 70 | 3.481 / 2.686 / 2.686 |
+| script_boundaries | indic_telugu_combining_vowels | 38 / 51 / 61 | 5.026 / 3.745 / 3.131 |
+| script_boundaries | arabic_cursive_and_tatweel | 47 / 50 / 54 | 2.340 / 2.200 / 2.037 |
+| script_boundaries | code_python_signature | 53 / 50 / 59 | 1.472 / 1.560 / 1.322 |
+| script_boundaries | code_javascript_destructuring | 57 / 54 / 55 | 1.263 / 1.333 / 1.309 |
 
----
+## Observed Whitespace Fragmentation
 
-## 2. Controlled Synthetic Diagnostics
+| Tokenizer | Fixture whitespace runs | Split runs | Excess fragments | Cross-field token emissions |
+| --- | --- | --- | --- | --- |
+| Boundary-BPE | 181 | 7 | 24 | 0 |
+| SentencePiece-Unigram | 181 | 7 | 24 | 0 |
+| UT-SuperBPE | 181 | 5 | 10 | 1 |
 
-| Category | Test Case | Metric | Boundary-BPE | SentencePiece-Unigram | UT-SuperBPE |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| `whitespace_runs` | `single_space` | Tokens (lower=better) | 9 | 10 | **8** |
-| | | Bytes/Token (higher=better) | 1.22 | 1.10 | **1.38** |
-| `whitespace_runs` | `double_space` | Tokens (lower=better) | 10 | 10 | **10** |
-| | | Bytes/Token (higher=better) | 1.20 | 1.20 | **1.20** |
-| `whitespace_runs` | `four_space_indent` | Tokens (lower=better) | 10 | 5 | **7** |
-| | | Bytes/Token (higher=better) | 1.00 | 2.00 | **1.43** |
-| `whitespace_runs` | `eight_space_indent` | Tokens (lower=better) | 21 | 10 | **16** |
-| | | Bytes/Token (higher=better) | 1.24 | 2.60 | **1.62** |
-| `whitespace_runs` | `tab_indentation` | Tokens (lower=better) | 17 | 11 | **22** |
-| | | Bytes/Token (higher=better) | 1.41 | 2.18 | **1.09** |
-| `whitespace_runs` | `mixed_whitespace_run` | Tokens (lower=better) | 21 | 11 | **18** |
-| | | Bytes/Token (higher=better) | 1.19 | 2.27 | **1.39** |
-| `whitespace_runs` | `padded_surrounding_whitespace` | Tokens (lower=better) | 16 | 9 | **17** |
-| | | Bytes/Token (higher=better) | 1.25 | 2.22 | **1.18** |
-| `punctuation_sequences` | `ellipsis_repeats` | Tokens (lower=better) | 27 | 28 | **27** |
-| | | Bytes/Token (higher=better) | 1.37 | 1.32 | **1.37** |
-| `punctuation_sequences` | `markdown_dividers` | Tokens (lower=better) | 17 | 17 | **18** |
-| | | Bytes/Token (higher=better) | 1.35 | 1.35 | **1.28** |
-| `punctuation_sequences` | `nested_brackets` | Tokens (lower=better) | 24 | 23 | **22** |
-| | | Bytes/Token (higher=better) | 1.04 | 1.09 | **1.14** |
-| `punctuation_sequences` | `multi_punctuation_emotive` | Tokens (lower=better) | 29 | 27 | **27** |
-| | | Bytes/Token (higher=better) | 1.10 | 1.19 | **1.19** |
-| `punctuation_sequences` | `operator_arrows` | Tokens (lower=better) | 24 | 22 | **22** |
-| | | Bytes/Token (higher=better) | 1.17 | 1.27 | **1.27** |
-| `mixed_alphanumeric` | `semver_version` | Tokens (lower=better) | 23 | 24 | **25** |
-| | | Bytes/Token (higher=better) | 1.09 | 1.04 | **1.00** |
-| `mixed_alphanumeric` | `hex_memory_address` | Tokens (lower=better) | 48 | 56 | **50** |
-| | | Bytes/Token (higher=better) | 1.27 | 1.09 | **1.22** |
-| `mixed_alphanumeric` | `system_identifiers` | Tokens (lower=better) | 40 | 40 | **44** |
-| | | Bytes/Token (higher=better) | 1.30 | 1.30 | **1.18** |
-| `mixed_alphanumeric` | `camel_case_identifiers` | Tokens (lower=better) | 28 | 30 | **30** |
-| | | Bytes/Token (higher=better) | 1.39 | 1.30 | **1.30** |
-| `mixed_alphanumeric` | `snake_case_identifiers` | Tokens (lower=better) | 26 | 27 | **32** |
-| | | Bytes/Token (higher=better) | 1.50 | 1.44 | **1.22** |
-| `mixed_alphanumeric` | `kebab_case_headers` | Tokens (lower=better) | 28 | 32 | **32** |
-| | | Bytes/Token (higher=better) | 1.54 | 1.34 | **1.34** |
-| `code_symbols` | `compound_assignment_operators` | Tokens (lower=better) | 39 | 34 | **35** |
-| | | Bytes/Token (higher=better) | 1.00 | 1.15 | **1.11** |
-| `code_symbols` | `strict_equality_and_logical` | Tokens (lower=better) | 36 | 31 | **32** |
-| | | Bytes/Token (higher=better) | 1.00 | 1.16 | **1.12** |
-| `code_symbols` | `bitwise_shift_operators` | Tokens (lower=better) | 38 | 39 | **40** |
-| | | Bytes/Token (higher=better) | 1.08 | 1.05 | **1.02** |
-| `code_symbols` | `cxx_scope_and_pointers` | Tokens (lower=better) | 39 | 40 | **41** |
-| | | Bytes/Token (higher=better) | 1.26 | 1.23 | **1.20** |
-| `code_symbols` | `rust_generics_and_returns` | Tokens (lower=better) | 46 | 46 | **44** |
-| | | Bytes/Token (higher=better) | 1.17 | 1.17 | **1.23** |
-| `code_symbols` | `comment_delimiters` | Tokens (lower=better) | 37 | 33 | **34** |
-| | | Bytes/Token (higher=better) | 1.38 | 1.54 | **1.50** |
-| `cross_word_merges` | `common_prepositional_phrases` | Tokens (lower=better) | 45 | 38 | **37** |
-| | | Bytes/Token (higher=better) | 1.20 | 1.42 | **1.46** |
-| `cross_word_merges` | `frequent_determiner_bigrams` | Tokens (lower=better) | 32 | 26 | **24** |
-| | | Bytes/Token (higher=better) | 1.31 | 1.61 | **1.75** |
-| `cross_word_merges` | `sentence_integration` | Tokens (lower=better) | 61 | 58 | **56** |
-| | | Bytes/Token (higher=better) | 1.25 | 1.31 | **1.36** |
-| `script_boundaries` | `latin_finnish_compounds` | Tokens (lower=better) | 46 | 50 | **54** |
-| | | Bytes/Token (higher=better) | 1.33 | 1.22 | **1.13** |
-| `script_boundaries` | `latin_spanish_inverted_punct` | Tokens (lower=better) | 41 | 39 | **41** |
-| | | Bytes/Token (higher=better) | 1.22 | 1.28 | **1.22** |
-| `script_boundaries` | `cjk_mandarin_unsegmented` | Tokens (lower=better) | 77 | 75 | **75** |
-| | | Bytes/Token (higher=better) | 1.29 | 1.32 | **1.32** |
-| `script_boundaries` | `cjk_japanese_mixed_scripts` | Tokens (lower=better) | 75 | 75 | **75** |
-| | | Bytes/Token (higher=better) | 1.08 | 1.08 | **1.08** |
-| `script_boundaries` | `indic_hindi_virama_conjuncts` | Tokens (lower=better) | 54 | 63 | **72** |
-| | | Bytes/Token (higher=better) | 3.48 | 2.98 | **2.61** |
-| `script_boundaries` | `indic_telugu_combining_vowels` | Tokens (lower=better) | 38 | 39 | **58** |
-| | | Bytes/Token (higher=better) | 5.03 | 4.90 | **3.29** |
-| `script_boundaries` | `arabic_cursive_and_tatweel` | Tokens (lower=better) | 47 | 56 | **56** |
-| | | Bytes/Token (higher=better) | 2.34 | 1.96 | **1.96** |
-| `script_boundaries` | `code_python_signature` | Tokens (lower=better) | 57 | 51 | **59** |
-| | | Bytes/Token (higher=better) | 1.37 | 1.53 | **1.32** |
-| `script_boundaries` | `code_javascript_destructuring` | Tokens (lower=better) | 55 | 42 | **47** |
-| | | Bytes/Token (higher=better) | 1.31 | 1.71 | **1.53** |
+## Frozen Real Source Probes
 
----
+The role is part of every stratum name. `validation/` uses original frozen
+validation documents. `train_probe/` uses original source training English
+and code documents, unseen by these newly synthetic-trained models. These
+are not Phase A held-out validation. No frozen assignments were changed.
+The retained run uses at most five documents per stratum, truncated to the
+first 256 raw Unicode characters. IDs, source document hashes, excerpt spans
+and input hashes are in results.json. This bounded prefix sample is not representative.
 
-## 3. Real-Corpus Validation Across Scripts & Code
+| Source role / domain / language | Documents | Bytes/token: BPE / SPM / UT | Tokens/char: BPE / SPM / UT |
+| --- | --- | --- | --- |
+| train_probe/code/c | 5 | 1.173 / 1.166 / 1.144 | 0.852 / 0.858 / 0.874 |
+| train_probe/code/cpp | 5 | 1.185 / 1.199 / 1.154 | 0.847 / 0.837 / 0.870 |
+| train_probe/code/go | 5 | 1.203 / 1.234 / 1.187 | 0.831 / 0.810 / 0.842 |
+| train_probe/code/java | 5 | 1.203 / 1.240 / 1.214 | 0.831 / 0.806 / 0.823 |
+| train_probe/code/javascript | 5 | 1.235 / 1.239 / 1.264 | 0.820 / 0.817 / 0.801 |
+| train_probe/code/python | 5 | 1.265 / 1.290 / 1.230 | 0.791 / 0.775 / 0.813 |
+| train_probe/code/rust | 5 | 1.210 / 1.233 / 1.223 | 0.826 / 0.811 / 0.817 |
+| train_probe/code/sql | 5 | 1.074 / 1.093 / 1.154 | 0.931 / 0.915 / 0.866 |
+| train_probe/code/typescript | 5 | 1.258 / 1.284 / 1.160 | 0.795 / 0.779 / 0.862 |
+| train_probe/latin_english/en | 5 | 1.231 / 1.241 / 1.209 | 0.825 / 0.818 / 0.840 |
+| validation/flores200/am | 5 | 1.001 / 1.001 / 1.001 | 2.512 / 2.514 / 2.512 |
+| validation/flores200/ar | 5 | 1.942 / 1.983 / 1.956 | 0.942 / 0.922 / 0.935 |
+| validation/flores200/bg | 5 | 1.872 / 1.828 / 2.053 | 0.963 / 0.986 / 0.878 |
+| validation/flores200/bn | 5 | 1.000 / 1.000 / 1.003 | 2.697 / 2.697 / 2.689 |
+| validation/flores200/fa | 5 | 1.651 / 1.688 / 1.708 | 1.092 / 1.069 / 1.056 |
+| validation/flores200/gu | 5 | 1.000 / 1.000 / 1.003 | 2.625 / 2.625 / 2.618 |
+| validation/flores200/hi | 5 | 2.349 / 2.285 / 1.867 | 1.082 / 1.113 / 1.362 |
+| validation/flores200/ja | 5 | 1.058 / 1.058 / 1.058 | 2.700 / 2.700 / 2.700 |
+| validation/flores200/kn | 5 | 1.000 / 1.000 / 1.003 | 2.652 / 2.652 / 2.644 |
+| validation/flores200/ko | 5 | 1.000 / 1.000 / 1.004 | 2.384 / 2.384 / 2.373 |
+| validation/flores200/ml | 5 | 1.001 / 1.000 / 1.003 | 2.722 / 2.723 / 2.715 |
+| validation/flores200/mr | 5 | 2.506 / 2.453 / 1.783 | 1.074 / 1.097 / 1.509 |
+| validation/flores200/ru | 5 | 1.885 / 1.835 / 2.029 | 0.963 / 0.989 / 0.895 |
+| validation/flores200/sw | 5 | 1.244 / 1.298 / 1.228 | 0.804 / 0.771 / 0.814 |
+| validation/flores200/ta | 5 | 1.000 / 1.000 / 1.004 | 2.704 / 2.704 / 2.694 |
+| validation/flores200/te | 5 | 2.426 / 2.394 / 1.688 | 1.109 / 1.124 / 1.594 |
+| validation/flores200/uk | 5 | 1.747 / 1.743 / 1.905 | 1.039 / 1.042 / 0.953 |
+| validation/flores200/ur | 5 | 1.341 / 1.354 / 1.379 | 1.316 / 1.303 / 1.280 |
+| validation/flores200/yo | 5 | 1.061 / 1.099 / 1.130 | 1.308 / 1.262 / 1.227 |
+| validation/flores200/zh | 5 | 1.347 / 1.350 / 1.340 | 1.931 / 1.927 / 1.941 |
 
-| Domain | Script / Type | Metric | Boundary-BPE | SentencePiece-Unigram | UT-SuperBPE | Delta (UT vs SP) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Arabic** | Arabic / Connecting | Bytes/Token | 2.79 | 2.96 | **3.11** | **+5.0%** |
-| | | Tokens/Char | 0.67 | 0.64 | **0.60** | |
-| | | Split WS Runs (%) | 0.0% | 0.0% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 0.0% | 0.2% | |
-| **Chinese** | Han / Unsegmented | Bytes/Token | 2.87 | 2.82 | **2.83** | **+0.5%** |
-| | | Tokens/Char | 0.99 | 1.00 | **1.00** | |
-| | | Split WS Runs (%) | 0.0% | 0.0% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 0.0% | 0.0% | |
-| **Code** | Programming Syntax | Bytes/Token | 1.45 | 2.29 | **1.55** | **-32.0%** |
-| | | Tokens/Char | 0.69 | 0.44 | **0.64** | |
-| | | Split WS Runs (%) | 27.0% | 18.9% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 2.6% | 2.8% | |
-| **English** | Latin / High Resource | Bytes/Token | 1.32 | 1.48 | **1.47** | **-0.1%** |
-| | | Tokens/Char | 0.76 | 0.68 | **0.68** | |
-| | | Split WS Runs (%) | 0.0% | 0.0% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 0.0% | 0.0% | |
-| **Finnish** | Latin / Agglutinative | Bytes/Token | 1.44 | 1.58 | **1.54** | **-3.0%** |
-| | | Tokens/Char | 0.75 | 0.68 | **0.70** | |
-| | | Split WS Runs (%) | 0.0% | 0.0% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 0.0% | 0.0% | |
-| **Hindi** | Devanagari / Combining | Bytes/Token | 3.71 | 3.81 | **3.82** | **+0.4%** |
-| | | Tokens/Char | 0.74 | 0.72 | **0.72** | |
-| | | Split WS Runs (%) | 0.0% | 0.0% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 0.0% | 0.0% | |
-| **Russian** | Cyrillic | Bytes/Token | 2.75 | 2.80 | **3.09** | **+10.3%** |
-| | | Tokens/Char | 0.69 | 0.67 | **0.61** | |
-| | | Split WS Runs (%) | 0.0% | 0.0% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 0.0% | 0.1% | |
-| **Telugu** | Telugu / Combining | Bytes/Token | 4.01 | 4.14 | **4.12** | **-0.5%** |
-| | | Tokens/Char | 0.69 | 0.67 | **0.67** | |
-| | | Split WS Runs (%) | 0.0% | 0.0% | 0.0% | |
-| | | Cross-Word Tokens (%) | 0.0% | 0.0% | 0.0% | |
+## Audit and Interpretation
 
----
-
-## 4. Auditable Token Span Trace (Representative Examples)
-
-Detailed token-level spans tiling normalized text for representative test cases:
-
-### Diagnostic Case: `four_space_indent`
-- **Raw Text**: `'    x = 10'`
-
-| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |
-| :--- | :--- | :--- | :---: |
-| **Boundary-BPE** | `' ', ' ', ' ', ' ', 'x', ' ', '=', ' ', '1', '0'` | `[0:1], [1:2], [2:3], [3:4], [4:5], [5:6], [6:7], [7:8], [8:9], [9:10]` | No |
-| **SentencePiece-Unigram** | `'x', '▁=', '▁', '1', '0'` | `[0:1], [1:3], [3:4], [4:5], [5:6]` | No |
-| **UT-SuperBPE** | `'▁▁▁▁', 'x', '▁', '=', '▁', '1', '0'` | `[0:4], [4:5], [5:6], [6:7], [7:8], [8:9], [9:10]` | No |
-
-### Diagnostic Case: `ellipsis_repeats`
-- **Raw Text**: `'processing... please wait...... done!'`
-
-| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |
-| :--- | :--- | :--- | :---: |
-| **Boundary-BPE** | `'p', 'ro', 'ce', 'ss', 'ing', '.', '.', '.', ' ', 'p', 'le', 'a', 'se', ' ', 'wa', 'it', '.', '.', '.', '.', '.', '.', ' ', 'd', 'on', 'e', '<0x21>'` | `[0:1], [1:3], [3:5], [5:7], [7:10], [10:11], [11:12], [12:13], [13:14], [14:15], [15:17], [17:18], [18:20], [20:21], [21:23], [23:25], [25:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:32], [32:33], [33:35], [35:36], [36:37]` | No |
-| **SentencePiece-Unigram** | `'p', 'r', 'oc', 'ess', 'ing', '.', '.', '.', '▁p', 'l', 'e', 'a', 'se', '▁', 'w', 'a', 'i', 't', '.', '.', '.', '.', '.', '.', '▁d', 'on', 'e', '<0x21>'` | `[0:1], [1:2], [2:4], [4:7], [7:10], [10:11], [11:12], [12:13], [13:15], [15:16], [16:17], [17:18], [18:20], [20:21], [21:22], [22:23], [23:24], [24:25], [25:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:33], [33:35], [35:36], [36:37]` | No |
-| **UT-SuperBPE** | `'p', 'r', 'o', 'ce', 's', 's', 'ing', '.', '.', '.', '▁p', 'le', 'a', 'se', '▁w', 'a', 'it', '.', '.', '.', '.', '.', '.', '▁d', 'on', 'e', '<0x21>'` | `[0:1], [1:2], [2:3], [3:5], [5:6], [6:7], [7:10], [10:11], [11:12], [12:13], [13:15], [15:17], [17:18], [18:20], [20:22], [22:23], [23:25], [25:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:33], [33:35], [35:36], [36:37]` | No |
-
-### Diagnostic Case: `semver_version`
-- **Raw Text**: `'v1.2.3-alpha.4+build.2026'`
-
-| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |
-| :--- | :--- | :--- | :---: |
-| **Boundary-BPE** | `'v', '1', '.', '2', '.', '3', '-', 'al', 'p', 'h', 'a', '.', '4', '<0x2B>', 'bu', 'i', 'l', 'd', '.', '2', '0', '2', '6'` | `[0:1], [1:2], [2:3], [3:4], [4:5], [5:6], [6:7], [7:9], [9:10], [10:11], [11:12], [12:13], [13:14], [14:15], [15:17], [17:18], [18:19], [19:20], [20:21], [21:22], [22:23], [23:24], [24:25]` | No |
-| **SentencePiece-Unigram** | `'v', '1', '.', '2', '.', '3', '-', 'al', 'p', 'h', 'a', '.', '4', '<0x2B>', 'b', 'u', 'i', 'l', 'd', '.', '2', '0', '2', '6'` | `[0:1], [1:2], [2:3], [3:4], [4:5], [5:6], [6:7], [7:9], [9:10], [10:11], [11:12], [12:13], [13:14], [14:15], [15:16], [16:17], [17:18], [18:19], [19:20], [20:21], [21:22], [22:23], [23:24], [24:25]` | No |
-| **UT-SuperBPE** | `'v', '1', '.', '2', '.', '3', '-', 'a', 'l', 'p', 'h', 'a', '.', '4', '<0x2B>', 'b', 'u', 'i', 'l', 'd', '.', '2', '0', '2', '6'` | `[0:1], [1:2], [2:3], [3:4], [4:5], [5:6], [6:7], [7:8], [8:9], [9:10], [10:11], [11:12], [12:13], [13:14], [14:15], [15:16], [16:17], [17:18], [18:19], [19:20], [20:21], [21:22], [22:23], [23:24], [24:25]` | No |
-
-### Diagnostic Case: `strict_equality_and_logical`
-- **Raw Text**: `'if (a === b && c !== d || !(x <= y))'`
-
-| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |
-| :--- | :--- | :--- | :---: |
-| **Boundary-BPE** | `'i', 'f', ' ', '(', 'a', ' ', '=', '=', '=', ' ', 'b', ' ', '&', '&', ' ', 'c', ' ', '<0x21>', '=', '=', ' ', 'd', ' ', '<0x7C>', '<0x7C>', ' ', '<0x21>', '(', 'x', ' ', '<', '=', ' ', 'y', ')', ')'` | `[0:1], [1:2], [2:3], [3:4], [4:5], [5:6], [6:7], [7:8], [8:9], [9:10], [10:11], [11:12], [12:13], [13:14], [14:15], [15:16], [16:17], [17:18], [18:19], [19:20], [20:21], [21:22], [22:23], [23:24], [24:25], [25:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:32], [32:33], [33:34], [34:35], [35:36]` | No |
-| **SentencePiece-Unigram** | `'i', 'f', '▁', '(', 'a', '▁=', '=', '=', '▁b', '▁', '&', '&', '▁c', '▁', '<0x21>', '=', '=', '▁d', '▁', '<0x7C>', '<0x7C>', '▁', '<0x21>', '(', 'x', '▁', '<', '=', '▁y', ')', ')'` | `[0:1], [1:2], [2:3], [3:4], [4:5], [5:7], [7:8], [8:9], [9:11], [11:12], [12:13], [13:14], [14:16], [16:17], [17:18], [18:19], [19:20], [20:22], [22:23], [23:24], [24:25], [25:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:32], [32:34], [34:35], [35:36]` | No |
-| **UT-SuperBPE** | `'i', 'f', '▁', '(', 'a', '▁', '=', '=', '=', '▁b', '▁', '&', '&', '▁c', '▁', '<0x21>', '=', '=', '▁d', '▁', '<0x7C>', '<0x7C>', '▁', '<0x21>', '(', 'x', '▁', '<', '=', '▁y', ')', ')'` | `[0:1], [1:2], [2:3], [3:4], [4:5], [5:6], [6:7], [7:8], [8:9], [9:11], [11:12], [12:13], [13:14], [14:16], [16:17], [17:18], [18:19], [19:20], [20:22], [22:23], [23:24], [24:25], [25:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:32], [32:34], [34:35], [35:36]` | No |
-
-### Diagnostic Case: `common_prepositional_phrases`
-- **Raw Text**: `'in the beginning of the project to the end for the win'`
-
-| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |
-| :--- | :--- | :--- | :---: |
-| **Boundary-BPE** | `'in', ' ', 't', 'h', 'e', ' ', 'b', 'e', 'g', 'in', 'n', 'ing', ' ', 'o', 'f', ' ', 't', 'h', 'e', ' ', 'p', 'ro', 'j', 'e', 'c', 't', ' ', 't', 'o', ' ', 't', 'h', 'e', ' ', 'en', 'd', ' ', 'for', ' ', 't', 'h', 'e', ' ', 'w', 'in'` | `[0:2], [2:3], [3:4], [4:5], [5:6], [6:7], [7:8], [8:9], [9:10], [10:12], [12:13], [13:16], [16:17], [17:18], [18:19], [19:20], [20:21], [21:22], [22:23], [23:24], [24:25], [25:27], [27:28], [28:29], [29:30], [30:31], [31:32], [32:33], [33:34], [34:35], [35:36], [36:37], [37:38], [38:39], [39:41], [41:42], [42:43], [43:46], [46:47], [47:48], [48:49], [49:50], [50:51], [51:52], [52:54]` | No |
-| **SentencePiece-Unigram** | `'i', 'n', '▁', 'th', 'e', '▁b', 'e', 'g', 'i', 'n', 'n', 'ing', '▁', 'o', 'f', '▁', 'th', 'e', '▁pr', 'o', 'j', 'ec', 't', '▁t', 'o', '▁', 'th', 'e', '▁e', 'n', 'd', '▁', 'for', '▁', 'th', 'e', '▁', 'win'` | `[0:1], [1:2], [2:3], [3:5], [5:6], [6:8], [8:9], [9:10], [10:11], [11:12], [12:13], [13:16], [16:17], [17:18], [18:19], [19:20], [20:22], [22:23], [23:26], [26:27], [27:28], [28:30], [30:31], [31:33], [33:34], [34:35], [35:37], [37:38], [38:40], [40:41], [41:42], [42:43], [43:46], [46:47], [47:49], [49:50], [50:51], [51:54]` | No |
-| **UT-SuperBPE** | `'in', '▁t', 'h', 'e', '▁b', 'e', 'g', 'in', 'n', 'ing', '▁o', 'f', '▁t', 'h', 'e', '▁p', 'r', 'o', 'j', 'e', 'c', 't', '▁t', 'o', '▁t', 'h', 'e', '▁e', 'n', 'd', '▁f', 'or', '▁t', 'h', 'e', '▁w', 'in'` | `[0:2], [2:4], [4:5], [5:6], [6:8], [8:9], [9:10], [10:12], [12:13], [13:16], [16:18], [18:19], [19:21], [21:22], [22:23], [23:25], [25:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:33], [33:34], [34:36], [36:37], [37:38], [38:40], [40:41], [41:42], [42:44], [44:46], [46:48], [48:49], [49:50], [50:52], [52:54]` | No |
-
-### Diagnostic Case: `cjk_mandarin_unsegmented`
-- **Raw Text**: `'人工智能和自然语言处理技术发展迅速，多语言分词器边界研究十分关键。'`
-
-| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |
-| :--- | :--- | :--- | :---: |
-| **Boundary-BPE** | `'人', '工', '<0xE6>', '<0x99>', '<0xBA>', '能', '和', '自', '<0xE7>', '<0x84>', '<0xB6>', '<0xE8>', '<0xAF>', '<0xAD>', '<0xE8>', '<0xA8>', '<0x80>', '<0xE5>', '<0xA4>', '<0x84>', '理', '<0xE6>', '<0x8A>', '<0x80>', '<0xE6>', '<0x9C>', '<0xAF>', '发', '<0xE5>', '<0xB1>', '<0x95>', '<0xE8>', '<0xBF>', '<0x85>', '<0xE9>', '<0x80>', '<0x9F>', '<0xEF>', '<0xBC>', '<0x8C>', '多', '<0xE8>', '<0xAF>', '<0xAD>', '<0xE8>', '<0xA8>', '<0x80>', '分', '<0xE8>', '<0xAF>', '<0x8D>', '<0xE5>', '<0x99>', '<0xA8>', '<0xE8>', '<0xBE>', '<0xB9>', '<0xE7>', '<0x95>', '<0x8C>', '<0xE7>', '<0xA0>', '<0x94>', '<0xE7>', '<0xA9>', '<0xB6>', '十', '分', '<0xE5>', '<0x85>', '<0xB3>', '<0xE9>', '<0x94>', '<0xAE>', '<0xE3>', '<0x80>', '<0x82>'` | `[0:1], [1:2], [2:2], [2:2], [2:3], [3:4], [4:5], [5:6], [6:6], [6:6], [6:7], [7:7], [7:7], [7:8], [8:8], [8:8], [8:9], [9:9], [9:9], [9:10], [10:11], [11:11], [11:11], [11:12], [12:12], [12:12], [12:13], [13:14], [14:14], [14:14], [14:15], [15:15], [15:15], [15:16], [16:16], [16:16], [16:17], [17:17], [17:17], [17:18], [18:19], [19:19], [19:19], [19:20], [20:20], [20:20], [20:21], [21:22], [22:22], [22:22], [22:23], [23:23], [23:23], [23:24], [24:24], [24:24], [24:25], [25:25], [25:25], [25:26], [26:26], [26:26], [26:27], [27:27], [27:27], [27:28], [28:29], [29:30], [30:30], [30:30], [30:31], [31:31], [31:31], [31:32], [32:32], [32:32], [32:33]` | No |
-| **SentencePiece-Unigram** | `'人', '工', '<0xE6>', '<0x99>', '<0xBA>', '能', '和', '自', '<0xE7>', '<0x84>', '<0xB6>', '<0xE8>', '<0xAF>', '<0xAD>', '<0xE8>', '<0xA8>', '<0x80>', '<0xE5>', '<0xA4>', '<0x84>', '理', '<0xE6>', '<0x8A>', '<0x80>', '<0xE6>', '<0x9C>', '<0xAF>', '发', '<0xE5>', '<0xB1>', '<0x95>', '<0xE8>', '<0xBF>', '<0x85>', '<0xE9>', '<0x80>', '<0x9F>', ',', '多', '<0xE8>', '<0xAF>', '<0xAD>', '<0xE8>', '<0xA8>', '<0x80>', '分', '<0xE8>', '<0xAF>', '<0x8D>', '<0xE5>', '<0x99>', '<0xA8>', '<0xE8>', '<0xBE>', '<0xB9>', '<0xE7>', '<0x95>', '<0x8C>', '<0xE7>', '<0xA0>', '<0x94>', '<0xE7>', '<0xA9>', '<0xB6>', '十', '分', '<0xE5>', '<0x85>', '<0xB3>', '<0xE9>', '<0x94>', '<0xAE>', '<0xE3>', '<0x80>', '<0x82>'` | `[0:1], [1:2], [2:2], [2:2], [2:3], [3:4], [4:5], [5:6], [6:6], [6:6], [6:7], [7:7], [7:7], [7:8], [8:8], [8:8], [8:9], [9:9], [9:9], [9:10], [10:11], [11:11], [11:11], [11:12], [12:12], [12:12], [12:13], [13:14], [14:14], [14:14], [14:15], [15:15], [15:15], [15:16], [16:16], [16:16], [16:17], [17:17], [17:18], [18:18], [18:19], [19:19], [19:19], [19:20], [20:20], [20:21], [21:21], [21:22], [22:22], [22:22], [22:23], [23:23], [23:23], [23:24], [24:24], [24:24], [24:25], [25:25], [25:25], [25:26], [26:26], [26:26], [26:27], [27:27], [27:28], [28:29], [29:29], [29:30], [30:30], [30:30], [30:31], [31:31], [31:31], [31:32], [32:32]` | No |
-| **UT-SuperBPE** | `'人', '工', '<0xE6>', '<0x99>', '<0xBA>', '能', '和', '自', '<0xE7>', '<0x84>', '<0xB6>', '<0xE8>', '<0xAF>', '<0xAD>', '<0xE8>', '<0xA8>', '<0x80>', '<0xE5>', '<0xA4>', '<0x84>', '理', '<0xE6>', '<0x8A>', '<0x80>', '<0xE6>', '<0x9C>', '<0xAF>', '发', '<0xE5>', '<0xB1>', '<0x95>', '<0xE8>', '<0xBF>', '<0x85>', '<0xE9>', '<0x80>', '<0x9F>', ',', '多', '<0xE8>', '<0xAF>', '<0xAD>', '<0xE8>', '<0xA8>', '<0x80>', '分', '<0xE8>', '<0xAF>', '<0x8D>', '<0xE5>', '<0x99>', '<0xA8>', '<0xE8>', '<0xBE>', '<0xB9>', '<0xE7>', '<0x95>', '<0x8C>', '<0xE7>', '<0xA0>', '<0x94>', '<0xE7>', '<0xA9>', '<0xB6>', '十', '分', '<0xE5>', '<0x85>', '<0xB3>', '<0xE9>', '<0x94>', '<0xAE>', '<0xE3>', '<0x80>', '<0x82>'` | `[0:1], [1:2], [2:2], [2:2], [2:3], [3:4], [4:5], [5:6], [6:6], [6:6], [6:7], [7:7], [7:7], [7:8], [8:8], [8:8], [8:9], [9:9], [9:9], [9:10], [10:11], [11:11], [11:11], [11:12], [12:12], [12:12], [12:13], [13:14], [14:14], [14:14], [14:15], [15:15], [15:15], [15:16], [16:16], [16:16], [16:17], [17:17], [17:18], [18:18], [18:19], [19:19], [19:19], [19:20], [20:20], [20:21], [21:21], [21:22], [22:22], [22:22], [22:23], [23:23], [23:23], [23:24], [24:24], [24:24], [24:25], [25:25], [25:25], [25:26], [26:26], [26:26], [26:27], [27:27], [27:28], [28:29], [29:29], [29:30], [30:30], [30:30], [30:31], [31:31], [31:31], [31:32], [32:32]` | No |
-
-### Diagnostic Case: `indic_hindi_virama_conjuncts`
-- **Raw Text**: `'प्रणाली और विश्वविद्यालय में अनुसंधान कार्य योजना के अनुसार चल रहा है।'`
-
-| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |
-| :--- | :--- | :--- | :---: |
-| **Boundary-BPE** | `'प्रणाली', ' ', 'औ', 'र', ' ', 'वि', 'श', '्व', 'वि', 'द', '्', 'य', 'ा', 'ल', 'य', ' ', 'म', '<0xE0>', '<0xA5>', '<0x87>', 'ं', ' ', 'अनुस', 'ं', 'ध', 'ान', ' ', 'कार', '्', 'य', ' ', 'योजना', ' ', 'क', '<0xE0>', '<0xA5>', '<0x87>', ' ', 'अनुसार', ' ', 'च', 'ल', ' ', 'र', 'ह', 'ा', ' ', 'ह', '<0xE0>', '<0xA5>', '<0x88>', '<0xE0>', '<0xA5>', '<0xA4>'` | `[0:7], [7:8], [8:9], [9:10], [10:11], [11:13], [13:14], [14:16], [16:18], [18:19], [19:20], [20:21], [21:22], [22:23], [23:24], [24:25], [25:26], [26:26], [26:26], [26:27], [27:28], [28:29], [29:33], [33:34], [34:35], [35:37], [37:38], [38:41], [41:42], [42:43], [43:44], [44:49], [49:50], [50:51], [51:51], [51:51], [51:52], [52:53], [53:59], [59:60], [60:61], [61:62], [62:63], [63:64], [64:65], [65:66], [66:67], [67:68], [68:68], [68:68], [68:69], [69:69], [69:69], [69:70]` | No |
-| **SentencePiece-Unigram** | `'प्रणाली', '▁', 'औ', 'र', '▁', 'व', 'ि', 'श', '्', 'व', 'व', 'ि', 'द', '्', 'य', 'ा', 'ल', 'य', '▁', 'म', '<0xE0>', '<0xA5>', '<0x87>', 'ं', '▁', 'अ', 'न', 'ु', 'स', 'ं', 'ध', 'ा', 'न', '▁', 'क', 'ा', 'र', '्', 'य', '▁', 'योजना', '▁', 'क', '<0xE0>', '<0xA5>', '<0x87>', '▁', 'अनुसार', '▁', 'च', 'ल', '▁', 'र', 'ह', 'ा', '▁', 'ह', '<0xE0>', '<0xA5>', '<0x88>', '<0xE0>', '<0xA5>', '<0xA4>'` | `[0:7], [7:8], [8:9], [9:10], [10:11], [11:12], [12:13], [13:14], [14:15], [15:16], [16:17], [17:18], [18:19], [19:20], [20:21], [21:22], [22:23], [23:24], [24:25], [25:26], [26:26], [26:26], [26:27], [27:28], [28:29], [29:30], [30:31], [31:32], [32:33], [33:34], [34:35], [35:36], [36:37], [37:38], [38:39], [39:40], [40:41], [41:42], [42:43], [43:44], [44:49], [49:50], [50:51], [51:51], [51:51], [51:52], [52:53], [53:59], [59:60], [60:61], [61:62], [62:63], [63:64], [64:65], [65:66], [66:67], [67:68], [68:68], [68:68], [68:69], [69:69], [69:69], [69:70]` | No |
-| **UT-SuperBPE** | `'प्रणा', 'ली', '▁औ', 'र', '▁', 'वि', 'श', '<0xE0>', '<0xA5>', '<0x8D>', 'व', 'वि', 'द', '<0xE0>', '<0xA5>', '<0x8D>', 'य', '<0xE0>', '<0xA4>', '<0xBE>', 'ल', 'य', '▁', 'म', '<0xE0>', '<0xA5>', '<0x87>', '<0xE0>', '<0xA4>', '<0x82>', '▁', 'अनु', 'सं', 'ध', '<0xE0>', '<0xA4>', '<0xBE>', 'न▁', 'का', 'र', '<0xE0>', '<0xA5>', '<0x8D>', 'य', '▁', 'यो', 'जना', '▁क', '<0xE0>', '<0xA5>', '<0x87>', '▁', 'अनु', 'सा', 'र', '▁', 'च', 'ल', '▁', 'र', 'ह', '<0xE0>', '<0xA4>', '<0xBE>', '▁', 'ह', '<0xE0>', '<0xA5>', '<0x88>', '<0xE0>', '<0xA5>', '<0xA4>'` | `[0:5], [5:7], [7:9], [9:10], [10:11], [11:13], [13:14], [14:14], [14:14], [14:15], [15:16], [16:18], [18:19], [19:19], [19:19], [19:20], [20:21], [21:21], [21:21], [21:22], [22:23], [23:24], [24:25], [25:26], [26:26], [26:26], [26:27], [27:27], [27:27], [27:28], [28:29], [29:32], [32:34], [34:35], [35:35], [35:35], [35:36], [36:38], [38:40], [40:41], [41:41], [41:41], [41:42], [42:43], [43:44], [44:46], [46:49], [49:51], [51:51], [51:51], [51:52], [52:53], [53:56], [56:58], [58:59], [59:60], [60:61], [61:62], [62:63], [63:64], [64:65], [65:65], [65:65], [65:66], [66:67], [67:68], [68:68], [68:68], [68:69], [69:69], [69:69], [69:70]` | No |
-
----
-
-## 5. Research Integrity & Methodological Restraints
-
-- **Separation of Token Boundaries from Morphology**: Subword tokens are statistical segments derived from algorithmic frequency or likelihood optimization. **No claim is made that subword tokens correspond to grammatical morphemes, roots, affixes, or clitics**.
-- **Rejection of Whitespace-Word Fertility as a Cross-Script Metric**: Whitespace-delimited word counting is mathematically ill-posed in unsegmented scripts (CJK) and linguistically incongruent in agglutinative (Finnish) or complex combining scripts (Indic Devanagari, Telugu). The study relies exclusively on script-invariant metrics: **normalized UTF-8 bytes per token** and **tokens per Unicode codepoint**.
-- **Zero Test-Set Access & No Language Model Training**: Merge models were trained solely on synthetic/training corpora. Validation was executed strictly on disjoint validation splits without opening held-out test splits.
-- **Strict Matched Budget Invariance**: Exactly identical vocabulary limits ($V = 1024$) and 256 byte fallbacks were validated across all evaluated tokenizer models.
+- Normalized byte spans tile reconstructed UTF-8 exactly. Raw character and raw
+  byte spans are source envelopes. Byte fallback pieces within one multibyte
+  character share its nonempty raw character span; NFKC expansions may also overlap.
+- Fragmentation counts every token intersecting a maximal whitespace or Unicode
+  category P punctuation run, including every byte fallback fragment.
+- Cross-field tokens intersect two non-whitespace fields separated by whitespace;
+  this is an emission count, not a count of binary merge applications.
+- Bytes/token and tokens/Unicode character use pooled normalized source counts.
+  The JSONL audit includes synthetic fixtures and every frozen source excerpt.
+- Separation of token boundaries from linguistic morphology is explicit:
+  no claim is made about preserving morphemes, roots, affixes or clitics.
+  Whitespace-word fertility is invalid as a universal cross-script metric.
+- Differences describe these configurations, budgets, training data and probes.
+  They do not isolate an algorithmic cause or establish general superiority.
+- No language model was trained. Only frozen train/validation files were read;
+  the declared test path was checked for aliases but never opened or hashed.
