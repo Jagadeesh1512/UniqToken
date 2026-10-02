@@ -402,15 +402,19 @@ class CustomTokenizer:
         verbose: bool = True,
         streaming: bool = False,
         chunk_size_bytes: int = 500 * 1024 * 1024,
+        normalizer: Optional[Normalizer] = None,
+        pre_tokenizer: Optional[RegexPreTokenizer] = None,
     ) -> CustomTokenizer:
-        normalizer = Normalizer()
-        pre_tokenizer = RegexPreTokenizer(
-            split_digits=split_digits,
-            hex_literals=hex_literals,
-            digit_chunk_size=digit_chunk_size,
-            digit_chunking=digit_chunking,
-            preset=preset,
-        )
+        if normalizer is None:
+            normalizer = Normalizer()
+        if pre_tokenizer is None:
+            pre_tokenizer = RegexPreTokenizer(
+                split_digits=split_digits,
+                hex_literals=hex_literals,
+                digit_chunk_size=digit_chunk_size,
+                digit_chunking=digit_chunking,
+                preset=preset,
+            )
 
         combined_special = (
             list(SeedVocabularyBuilder.DEFAULT_SPECIAL_TOKENS) if special_tokens is None else list(special_tokens)

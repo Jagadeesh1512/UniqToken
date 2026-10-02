@@ -1,0 +1,2699 @@
+{
+  "metadata": {
+    "identity": {
+      "ledger_schema_version": 3,
+      "commit_hash": "5c43c8b0d46acb734791b4e46abc2e7a85b4edaf",
+      "working_tree_dirty": false,
+      "source_hash": "ff9bdf5a1d9f8cfddf577617e3143e7b1b272a2a133cd11b89f1675c4c70c062",
+      "extension_hash": "9032d519418328b01cec77ab641ee22c160fcd84cb199e6991d9146509c7ce36",
+      "extension_status": "installed",
+      "versions": {
+        "python": "3.10.11",
+        "torch": "2.13.0",
+        "sentencepiece": "0.2.1",
+        "numpy": "2.2.6",
+        "regex": "2026.4.4"
+      }
+    },
+    "inputs": {
+      "kind": "canonical_controlled_fixture"
+    },
+    "configuration": {
+      "target_vocab": 650,
+      "merge_reserve": 50,
+      "skew_factor": 8.0,
+      "normalizer": {
+        "space_char": "\u2581",
+        "lowercase": false,
+        "casefold": false,
+        "normalize_unicode": true,
+        "normalize_punctuation": false,
+        "normalize_unicode_spaces": true,
+        "collapse_whitespaces": false,
+        "strip_whitespace": false
+      }
+    },
+    "assignments": {
+      "train": {
+        "documents": 24,
+        "normalized_texts_sha256": "1783aeabe8edd15b9d7c92cafad1b4d93ded6982c045b2550f2f4f3de8e0a937",
+        "document_ids_sha256": "e9990f0ec77b7364b5141ac2aa99da9aeac043f110b877a48d2c3bb0888957a9"
+      },
+      "validation": {
+        "documents": 10,
+        "normalized_texts_sha256": "eccbcbbad591bb9fd24f7d9e0910b2614e6227029b2ecc874401d0ffc515f403",
+        "document_ids_sha256": "ce611ad13a024304966bdc111f225c035066471eae92fe027f78a117e1986c5d"
+      }
+    },
+    "test_access": "forbidden_not_opened_or_hashed"
+  },
+  "conditions": {
+    "Unigram_Baseline": {
+      "condition_name": "Unigram_Baseline",
+      "scoring_strategy": "none",
+      "target_vocab_size": 650,
+      "actual_vocab_size": 650,
+      "merge_count": 0,
+      "dominance_summary": {
+        "total_merges": 0,
+        "strata_allocation": {},
+        "concentrated_merges_count": 0,
+        "concentrated_merges_percent": 0.0,
+        "strata_represented_count": 0,
+        "herfindahl_index": 0.0
+      },
+      "merges": [],
+      "aggregate_tokens": 1154,
+      "aggregate_bytes": 1782,
+      "aggregate_bytes_per_token": 1.544,
+      "strata_metrics": {
+        "web:am": {
+          "stratum": "web:am",
+          "language": "am",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 164,
+          "normalized_bytes": 164,
+          "char_count": 62,
+          "word_count": 12,
+          "token_count": 88,
+          "bytes_per_token": 1.864,
+          "chars_per_token": 0.705,
+          "fertility": 7.333,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 42,
+          "fallback_rate_pct": 47.73
+        },
+        "web:ar": {
+          "stratum": "web:ar",
+          "language": "ar",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 147,
+          "normalized_bytes": 147,
+          "char_count": 79,
+          "word_count": 11,
+          "token_count": 81,
+          "bytes_per_token": 1.815,
+          "chars_per_token": 0.975,
+          "fertility": 7.364,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 4,
+          "fallback_rate_pct": 4.94
+        },
+        "web:en": {
+          "stratum": "web:en",
+          "language": "en",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 207,
+          "normalized_bytes": 207,
+          "char_count": 207,
+          "word_count": 20,
+          "token_count": 172,
+          "bytes_per_token": 1.203,
+          "chars_per_token": 1.203,
+          "fertility": 8.6,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 0.58
+        },
+        "web:es": {
+          "stratum": "web:es",
+          "language": "es",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 111,
+          "normalized_bytes": 111,
+          "char_count": 108,
+          "word_count": 11,
+          "token_count": 97,
+          "bytes_per_token": 1.144,
+          "chars_per_token": 1.113,
+          "fertility": 8.818,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 2,
+          "fallback_rate_pct": 2.06
+        },
+        "web:hi": {
+          "stratum": "web:hi",
+          "language": "hi",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 237,
+          "normalized_bytes": 237,
+          "char_count": 89,
+          "word_count": 16,
+          "token_count": 131,
+          "bytes_per_token": 1.809,
+          "chars_per_token": 0.679,
+          "fertility": 8.188,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 75,
+          "fallback_rate_pct": 57.25
+        },
+        "web:ml": {
+          "stratum": "web:ml",
+          "language": "ml",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 291,
+          "normalized_bytes": 291,
+          "char_count": 105,
+          "word_count": 11,
+          "token_count": 153,
+          "bytes_per_token": 1.902,
+          "chars_per_token": 0.686,
+          "fertility": 13.909,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 96,
+          "fallback_rate_pct": 62.75
+        },
+        "web:sw": {
+          "stratum": "web:sw",
+          "language": "sw",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 106,
+          "normalized_bytes": 106,
+          "char_count": 106,
+          "word_count": 16,
+          "token_count": 101,
+          "bytes_per_token": 1.05,
+          "chars_per_token": 1.05,
+          "fertility": 6.312,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 0.99
+        },
+        "web:te": {
+          "stratum": "web:te",
+          "language": "te",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 224,
+          "normalized_bytes": 224,
+          "char_count": 80,
+          "word_count": 8,
+          "token_count": 140,
+          "bytes_per_token": 1.6,
+          "chars_per_token": 0.571,
+          "fertility": 17.5,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 93,
+          "fallback_rate_pct": 66.43
+        },
+        "web:yo": {
+          "stratum": "web:yo",
+          "language": "yo",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 162,
+          "normalized_bytes": 162,
+          "char_count": 107,
+          "word_count": 24,
+          "token_count": 92,
+          "bytes_per_token": 1.761,
+          "chars_per_token": 1.163,
+          "fertility": 3.833,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 3,
+          "fallback_rate_pct": 3.26
+        },
+        "web:zh": {
+          "stratum": "web:zh",
+          "language": "zh",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 133,
+          "normalized_bytes": 133,
+          "char_count": 45,
+          "word_count": 1,
+          "token_count": 99,
+          "bytes_per_token": 1.343,
+          "chars_per_token": 0.455,
+          "fertility": 99.0,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 82,
+          "fallback_rate_pct": 82.83
+        }
+      }
+    },
+    "Global_SuperBPE": {
+      "condition_name": "Global_SuperBPE",
+      "scoring_strategy": "global",
+      "target_vocab_size": 650,
+      "actual_vocab_size": 650,
+      "merge_count": 50,
+      "dominance_summary": {
+        "total_merges": 50,
+        "strata_allocation": {
+          "web:ar": 9,
+          "web:hi": 1,
+          "web:am": 4,
+          "web:es": 15,
+          "web:en": 21
+        },
+        "concentrated_merges_count": 49,
+        "concentrated_merges_percent": 98.0,
+        "strata_represented_count": 5,
+        "herfindahl_index": 0.3056
+      },
+      "merges": [
+        {
+          "left": "\u0629",
+          "right": "\u2581",
+          "merged": "\u0629\u2581",
+          "score": -115.98370668718232,
+          "total_frequency": 5,
+          "strata_frequencies": {
+            "web:ar": 5
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0629\u2581",
+          "right": "\u0627",
+          "merged": "\u0629\u2581\u0627",
+          "score": -81.14776741352985,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0629\u2581\u0627",
+          "right": "\u0644",
+          "merged": "\u0629\u2581\u0627\u0644",
+          "score": -82.6785049105207,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u062a",
+          "right": "\u2581",
+          "merged": "\u062a\u2581",
+          "score": -68.0673387783057,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627",
+          "right": "\u062a\u2581",
+          "merged": "\u0627\u062a\u2581",
+          "score": -82.67850948310243,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0928",
+          "right": "\u2581\u092c\u0928\u093e",
+          "merged": "\u0928\u2581\u092c\u0928\u093e",
+          "score": -54.428249294480345,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:hi": 2
+          },
+          "dominant_stratum": "web:hi",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627\u062a\u2581",
+          "right": "\u0627",
+          "merged": "\u0627\u062a\u2581\u0627",
+          "score": -54.30924449522125,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627\u062a\u2581\u0627",
+          "right": "\u0644",
+          "merged": "\u0627\u062a\u2581\u0627\u0644",
+          "score": -55.11842637632766,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u064a",
+          "right": "\u0629\u2581",
+          "merged": "\u064a\u0629\u2581",
+          "score": -53.29807092733816,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0644",
+          "right": "\u2581",
+          "merged": "\u0644\u2581",
+          "score": -44.57546367534516,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u120d",
+          "right": "\u2581",
+          "merged": "\u120d\u2581",
+          "score": -44.576633266021766,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u122d",
+          "right": "\u2581",
+          "merged": "\u122d\u2581",
+          "score": -44.577803541069784,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u1275",
+          "right": "\u2581",
+          "merged": "\u1275\u2581",
+          "score": -44.57897450129059,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u120b",
+          "right": "\u1275\u2581",
+          "merged": "\u120b\u1275\u2581",
+          "score": -55.118430480167476,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581vocabulario",
+          "right": "\u2581con",
+          "merged": "\u2581vocabulario\u2581con",
+          "score": -43.33400967367712,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581modern",
+          "right": "\u2581neur",
+          "merged": "\u2581modern\u2581neur",
+          "score": -43.03770746319285,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "f",
+          "right": "\u2581modern\u2581neur",
+          "merged": "f\u2581modern\u2581neur",
+          "score": -36.01560739445332,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": ".",
+          "right": "\u2581",
+          "merged": ".\u2581",
+          "score": -34.95112997540122,
+          "total_frequency": 30,
+          "strata_frequencies": {
+            "web:en": 8,
+            "web:es": 16,
+            "web:ml": 2,
+            "web:te": 1,
+            "web:sw": 1,
+            "web:yo": 1,
+            "web:ar": 1
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 0.5333333333333333
+        },
+        {
+          "left": ".\u2581",
+          "right": "L",
+          "merged": ".\u2581L",
+          "score": -74.85327170964189,
+          "total_frequency": 17,
+          "strata_frequencies": {
+            "web:es": 16,
+            "web:sw": 1
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 0.9411764705882353
+        },
+        {
+          "left": "\u2581secuencia",
+          "right": ".\u2581L",
+          "merged": "\u2581secuencia.\u2581L",
+          "score": -39.738381782096795,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": ".\u2581",
+          "right": "M",
+          "merged": ".\u2581M",
+          "score": -35.28486898937789,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": ".\u2581M",
+          "right": "odern",
+          "merged": ".\u2581Modern",
+          "score": -45.730569230707346,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581modernos",
+          "right": ".\u2581L",
+          "merged": "\u2581modernos.\u2581L",
+          "score": -34.25818475369804,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "f",
+          "right": "\u2581co",
+          "merged": "f\u2581co",
+          "score": -33.62961630091637,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "f\u2581co",
+          "right": "de",
+          "merged": "f\u2581code",
+          "score": -45.84871456756292,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "f\u2581code",
+          "right": ",",
+          "merged": "f\u2581code,",
+          "score": -39.2599166685184,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "f\u2581code,",
+          "right": "\u2581divers",
+          "merged": "f\u2581code,\u2581divers",
+          "score": -40.20292519628102,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581constituyen",
+          "right": "\u2581la",
+          "merged": "\u2581constituyen\u2581la",
+          "score": -32.925487595850356,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "y",
+          "right": "\u2581sint\u00e1cticas",
+          "merged": "y\u2581sint\u00e1cticas",
+          "score": -31.10483254106355,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581tokenization",
+          "right": "\u2581",
+          "merged": "\u2581tokenization\u2581",
+          "score": -30.074909481494046,
+          "total_frequency": 16,
+          "strata_frequencies": {
+            "web:en": 16
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "d",
+          "right": "\u2581tokenization\u2581",
+          "merged": "d\u2581tokenization\u2581",
+          "score": -32.160725800796726,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "d\u2581tokenization\u2581",
+          "right": "f",
+          "merged": "d\u2581tokenization\u2581f",
+          "score": -36.01653141484382,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581secuencia.\u2581L",
+          "merged": "\u2581de\u2581secuencia.\u2581L",
+          "score": -30.052356082406988,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": ".\u2581Modern",
+          "right": "\u2581de",
+          "merged": ".\u2581Modern\u2581de",
+          "score": -30.03379176925481,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "y\u2581sint\u00e1cticas",
+          "right": ".",
+          "merged": "y\u2581sint\u00e1cticas.",
+          "score": -29.88144874248701,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "g",
+          "right": "\u2581architectures",
+          "merged": "g\u2581architectures",
+          "score": -28.540114370031986,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "p",
+          "right": "\u2581l",
+          "merged": "p\u2581l",
+          "score": -28.416645792516533,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581tokenization\u2581",
+          "right": "b",
+          "merged": "\u2581tokenization\u2581b",
+          "score": -28.109619960446608,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581subpalabras",
+          "merged": "\u2581de\u2581subpalabras",
+          "score": -27.62657006719956,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la",
+          "right": "\u2581tokenizaci\u00f3n",
+          "merged": "\u2581la\u2581tokenizaci\u00f3n",
+          "score": -27.63839704909845,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "atural",
+          "right": "\u2581la",
+          "merged": "atural\u2581la",
+          "score": -27.658029481357318,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "N",
+          "right": "atural\u2581la",
+          "merged": "Natural\u2581la",
+          "score": -44.8059298031113,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": ".",
+          "right": "\u2581Effective",
+          "merged": ".\u2581Effective",
+          "score": -27.67114628062305,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "o",
+          "right": "\u2581de",
+          "merged": "o\u2581de",
+          "score": -27.189333438886052,
+          "total_frequency": 16,
+          "strata_frequencies": {
+            "web:es": 16
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u00f1",
+          "right": "o\u2581de",
+          "merged": "\u00f1o\u2581de",
+          "score": -40.22363201205035,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581robust",
+          "right": "o\u2581de",
+          "merged": "\u2581robusto\u2581de",
+          "score": -34.69967836615485,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u00f1o\u2581de",
+          "right": "l",
+          "merged": "\u00f1o\u2581del",
+          "score": -27.60034813458099,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "and",
+          "right": "\u2581robust",
+          "merged": "and\u2581robust",
+          "score": -27.15855542387248,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "m",
+          "right": "and\u2581robust",
+          "merged": "mand\u2581robust",
+          "score": -30.771505981492176,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "mand\u2581robust",
+          "merged": "\u2581demand\u2581robust",
+          "score": -29.800217029952485,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:en": 8
+          },
+          "dominant_stratum": "web:en",
+          "dominance_ratio": 1.0
+        }
+      ],
+      "aggregate_tokens": 1168,
+      "aggregate_bytes": 1782,
+      "aggregate_bytes_per_token": 1.526,
+      "strata_metrics": {
+        "web:am": {
+          "stratum": "web:am",
+          "language": "am",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 164,
+          "normalized_bytes": 164,
+          "char_count": 62,
+          "word_count": 12,
+          "token_count": 85,
+          "bytes_per_token": 1.929,
+          "chars_per_token": 0.729,
+          "fertility": 7.083,
+          "merged_token_emissions": 2,
+          "tokens_saved": 3,
+          "fallback_tokens": 42,
+          "fallback_rate_pct": 49.41
+        },
+        "web:ar": {
+          "stratum": "web:ar",
+          "language": "ar",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 147,
+          "normalized_bytes": 147,
+          "char_count": 79,
+          "word_count": 11,
+          "token_count": 74,
+          "bytes_per_token": 1.986,
+          "chars_per_token": 1.068,
+          "fertility": 6.727,
+          "merged_token_emissions": 3,
+          "tokens_saved": 7,
+          "fallback_tokens": 4,
+          "fallback_rate_pct": 5.41
+        },
+        "web:en": {
+          "stratum": "web:en",
+          "language": "en",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 207,
+          "normalized_bytes": 207,
+          "char_count": 207,
+          "word_count": 20,
+          "token_count": 183,
+          "bytes_per_token": 1.131,
+          "chars_per_token": 1.131,
+          "fertility": 9.15,
+          "merged_token_emissions": 1,
+          "tokens_saved": -11,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 0.55
+        },
+        "web:es": {
+          "stratum": "web:es",
+          "language": "es",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 111,
+          "normalized_bytes": 111,
+          "char_count": 108,
+          "word_count": 11,
+          "token_count": 100,
+          "bytes_per_token": 1.11,
+          "chars_per_token": 1.08,
+          "fertility": 9.091,
+          "merged_token_emissions": 0,
+          "tokens_saved": -3,
+          "fallback_tokens": 2,
+          "fallback_rate_pct": 2.0
+        },
+        "web:hi": {
+          "stratum": "web:hi",
+          "language": "hi",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 237,
+          "normalized_bytes": 237,
+          "char_count": 89,
+          "word_count": 16,
+          "token_count": 131,
+          "bytes_per_token": 1.809,
+          "chars_per_token": 0.679,
+          "fertility": 8.188,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 75,
+          "fallback_rate_pct": 57.25
+        },
+        "web:ml": {
+          "stratum": "web:ml",
+          "language": "ml",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 291,
+          "normalized_bytes": 291,
+          "char_count": 105,
+          "word_count": 11,
+          "token_count": 157,
+          "bytes_per_token": 1.854,
+          "chars_per_token": 0.669,
+          "fertility": 14.273,
+          "merged_token_emissions": 0,
+          "tokens_saved": -4,
+          "fallback_tokens": 99,
+          "fallback_rate_pct": 63.06
+        },
+        "web:sw": {
+          "stratum": "web:sw",
+          "language": "sw",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 106,
+          "normalized_bytes": 106,
+          "char_count": 106,
+          "word_count": 16,
+          "token_count": 102,
+          "bytes_per_token": 1.039,
+          "chars_per_token": 1.039,
+          "fertility": 6.375,
+          "merged_token_emissions": 0,
+          "tokens_saved": -1,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 0.98
+        },
+        "web:te": {
+          "stratum": "web:te",
+          "language": "te",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 224,
+          "normalized_bytes": 224,
+          "char_count": 80,
+          "word_count": 8,
+          "token_count": 143,
+          "bytes_per_token": 1.566,
+          "chars_per_token": 0.559,
+          "fertility": 17.875,
+          "merged_token_emissions": 0,
+          "tokens_saved": -3,
+          "fallback_tokens": 96,
+          "fallback_rate_pct": 67.13
+        },
+        "web:yo": {
+          "stratum": "web:yo",
+          "language": "yo",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 162,
+          "normalized_bytes": 162,
+          "char_count": 107,
+          "word_count": 24,
+          "token_count": 94,
+          "bytes_per_token": 1.723,
+          "chars_per_token": 1.138,
+          "fertility": 3.917,
+          "merged_token_emissions": 0,
+          "tokens_saved": -2,
+          "fallback_tokens": 3,
+          "fallback_rate_pct": 3.19
+        },
+        "web:zh": {
+          "stratum": "web:zh",
+          "language": "zh",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 133,
+          "normalized_bytes": 133,
+          "char_count": 45,
+          "word_count": 1,
+          "token_count": 99,
+          "bytes_per_token": 1.343,
+          "chars_per_token": 0.455,
+          "fertility": 99.0,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 82,
+          "fallback_rate_pct": 82.83
+        }
+      }
+    },
+    "Balanced_SuperBPE": {
+      "condition_name": "Balanced_SuperBPE",
+      "scoring_strategy": "balanced",
+      "target_vocab_size": 650,
+      "actual_vocab_size": 650,
+      "merge_count": 50,
+      "dominance_summary": {
+        "total_merges": 50,
+        "strata_allocation": {
+          "web:ar": 10,
+          "web:am": 4,
+          "web:hi": 1,
+          "web:sw": 1,
+          "web:es": 34
+        },
+        "concentrated_merges_count": 49,
+        "concentrated_merges_percent": 98.0,
+        "strata_represented_count": 5,
+        "herfindahl_index": 0.5096
+      },
+      "merges": [
+        {
+          "left": "\u0629",
+          "right": "\u2581",
+          "merged": "\u0629\u2581",
+          "score": -202.3508483131459,
+          "total_frequency": 5,
+          "strata_frequencies": {
+            "web:ar": 5
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0629\u2581",
+          "right": "\u0627",
+          "merged": "\u0629\u2581\u0627",
+          "score": -141.40494355539533,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0629\u2581\u0627",
+          "right": "\u0644",
+          "merged": "\u0629\u2581\u0627\u0644",
+          "score": -145.15252351691643,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u062a",
+          "right": "\u2581",
+          "merged": "\u062a\u2581",
+          "score": -123.22117335744309,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627",
+          "right": "\u062a\u2581",
+          "merged": "\u0627\u062a\u2581",
+          "score": -147.96635910684495,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627\u062a\u2581",
+          "right": "\u0627",
+          "merged": "\u0627\u062a\u2581\u0627",
+          "score": -98.3060978026791,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627\u062a\u2581\u0627",
+          "right": "\u0644",
+          "merged": "\u0627\u062a\u2581\u0627\u0644",
+          "score": -100.29326376311872,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u120d",
+          "right": "\u2581",
+          "merged": "\u120d\u2581",
+          "score": -97.99097446436822,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u122d",
+          "right": "\u2581",
+          "merged": "\u122d\u2581",
+          "score": -98.92770030126096,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u1275",
+          "right": "\u2581",
+          "merged": "\u1275\u2581",
+          "score": -99.89099800262107,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u120b",
+          "right": "\u1275\u2581",
+          "merged": "\u120b\u1275\u2581",
+          "score": -121.5375696738049,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u064a",
+          "right": "\u0629\u2581",
+          "merged": "\u064a\u0629\u2581",
+          "score": -97.97145769523229,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0644",
+          "right": "\u2581",
+          "merged": "\u0644\u2581",
+          "score": -84.19729425894948,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0928",
+          "right": "\u2581\u092c\u0928\u093e",
+          "merged": "\u0928\u2581\u092c\u0928\u093e",
+          "score": -67.45359496023516,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:hi": 2
+          },
+          "dominant_stratum": "web:hi",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0645",
+          "right": "\u2581",
+          "merged": "\u0645\u2581",
+          "score": -46.11039519752943,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "a",
+          "right": "\u2581",
+          "merged": "a\u2581",
+          "score": -41.13847355487423,
+          "total_frequency": 14,
+          "strata_frequencies": {
+            "web:sw": 14
+          },
+          "dominant_stratum": "web:sw",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581vocabulario",
+          "right": "\u2581con",
+          "merged": "\u2581vocabulario\u2581con",
+          "score": -40.13341731015708,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "o",
+          "right": "\u2581de",
+          "merged": "o\u2581de",
+          "score": -36.26204687337873,
+          "total_frequency": 16,
+          "strata_frequencies": {
+            "web:es": 16
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u00f1",
+          "right": "o\u2581de",
+          "merged": "\u00f1o\u2581de",
+          "score": -38.405584776743645,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": ".",
+          "right": "\u2581",
+          "merged": ".\u2581",
+          "score": -35.37084973454661,
+          "total_frequency": 30,
+          "strata_frequencies": {
+            "web:en": 8,
+            "web:es": 16,
+            "web:ml": 2,
+            "web:te": 1,
+            "web:yo": 1,
+            "web:ar": 1,
+            "web:sw": 1
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 0.5333333333333333
+        },
+        {
+          "left": ".\u2581",
+          "right": "L",
+          "merged": ".\u2581L",
+          "score": -76.18600447249868,
+          "total_frequency": 17,
+          "strata_frequencies": {
+            "web:es": 16,
+            "web:sw": 1
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 0.9411764705882353
+        },
+        {
+          "left": "\u2581secuencia",
+          "right": ".\u2581L",
+          "merged": "\u2581secuencia.\u2581L",
+          "score": -38.94486596625692,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581robust",
+          "right": "o\u2581de",
+          "merged": "\u2581robusto\u2581de",
+          "score": -35.46476094538685,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581modernos",
+          "right": ".\u2581L",
+          "merged": "\u2581modernos.\u2581L",
+          "score": -35.22334033550612,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581constituyen",
+          "right": "\u2581la",
+          "merged": "\u2581constituyen\u2581la",
+          "score": -34.40192469909108,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "y",
+          "right": "\u2581sint\u00e1cticas",
+          "merged": "y\u2581sint\u00e1cticas",
+          "score": -33.21965172329473,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581secuencia.\u2581L",
+          "merged": "\u2581de\u2581secuencia.\u2581L",
+          "score": -32.512668816803256,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "y\u2581sint\u00e1cticas",
+          "right": ".",
+          "merged": "y\u2581sint\u00e1cticas.",
+          "score": -32.64316563183549,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u00f1o\u2581de",
+          "right": "l",
+          "merged": "\u00f1o\u2581del",
+          "score": -31.341144790632246,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581subpalabras",
+          "merged": "\u2581de\u2581subpalabras",
+          "score": -31.25137497091312,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la",
+          "right": "\u2581tokenizaci\u00f3n",
+          "merged": "\u2581la\u2581tokenizaci\u00f3n",
+          "score": -31.468024310618482,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la",
+          "right": "\u2581l",
+          "merged": "\u2581la\u2581l",
+          "score": -30.53733417229147,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581l",
+          "right": "on",
+          "merged": "\u2581la\u2581lon",
+          "score": -49.75199110659548,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581lon",
+          "right": "g",
+          "merged": "\u2581la\u2581long",
+          "score": -34.73961805428303,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581long",
+          "right": "i",
+          "merged": "\u2581la\u2581longi",
+          "score": -31.637280560595748,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581longi",
+          "right": "t",
+          "merged": "\u2581la\u2581longit",
+          "score": -32.114744657930586,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581longit",
+          "right": "u",
+          "merged": "\u2581la\u2581longitu",
+          "score": -34.04617826801841,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581longitu",
+          "right": "d",
+          "merged": "\u2581la\u2581longitud",
+          "score": -41.314122310225386,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "l",
+          "right": "\u2581procesamiento",
+          "merged": "l\u2581procesamiento",
+          "score": -31.648074115725223,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "E",
+          "right": "l\u2581procesamiento",
+          "merged": "El\u2581procesamiento",
+          "score": -48.48435360299301,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "l",
+          "right": "\u2581t",
+          "merged": "l\u2581t",
+          "score": -30.488500305689595,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "e",
+          "right": "l\u2581t",
+          "merged": "el\u2581t",
+          "score": -32.34821255141201,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "n",
+          "right": "\u2581tratamiento",
+          "merged": "n\u2581tratamiento",
+          "score": -31.015192129024143,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "u",
+          "right": "n\u2581tratamiento",
+          "merged": "un\u2581tratamiento",
+          "score": -35.937198572839904,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "s",
+          "right": "\u2581neuronales",
+          "merged": "s\u2581neuronales",
+          "score": -30.39615453260565,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "o",
+          "right": "s\u2581neuronales",
+          "merged": "os\u2581neuronales",
+          "score": -34.07824618521591,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "s",
+          "right": "\u2581convenciones",
+          "merged": "s\u2581convenciones",
+          "score": -30.98021310427425,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581modernos.\u2581L",
+          "right": "a",
+          "merged": "\u2581modernos.\u2581La",
+          "score": -30.230712216678548,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581l",
+          "merged": "\u2581de\u2581l",
+          "score": -30.469986367881297,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de\u2581l",
+          "right": "o",
+          "merged": "\u2581de\u2581lo",
+          "score": -35.327951697433974,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        }
+      ],
+      "aggregate_tokens": 1157,
+      "aggregate_bytes": 1782,
+      "aggregate_bytes_per_token": 1.54,
+      "strata_metrics": {
+        "web:am": {
+          "stratum": "web:am",
+          "language": "am",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 164,
+          "normalized_bytes": 164,
+          "char_count": 62,
+          "word_count": 12,
+          "token_count": 85,
+          "bytes_per_token": 1.929,
+          "chars_per_token": 0.729,
+          "fertility": 7.083,
+          "merged_token_emissions": 2,
+          "tokens_saved": 3,
+          "fallback_tokens": 42,
+          "fallback_rate_pct": 49.41
+        },
+        "web:ar": {
+          "stratum": "web:ar",
+          "language": "ar",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 147,
+          "normalized_bytes": 147,
+          "char_count": 79,
+          "word_count": 11,
+          "token_count": 72,
+          "bytes_per_token": 2.042,
+          "chars_per_token": 1.097,
+          "fertility": 6.545,
+          "merged_token_emissions": 5,
+          "tokens_saved": 9,
+          "fallback_tokens": 4,
+          "fallback_rate_pct": 5.56
+        },
+        "web:en": {
+          "stratum": "web:en",
+          "language": "en",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 207,
+          "normalized_bytes": 207,
+          "char_count": 207,
+          "word_count": 20,
+          "token_count": 183,
+          "bytes_per_token": 1.131,
+          "chars_per_token": 1.131,
+          "fertility": 9.15,
+          "merged_token_emissions": 1,
+          "tokens_saved": -11,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 0.55
+        },
+        "web:es": {
+          "stratum": "web:es",
+          "language": "es",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 111,
+          "normalized_bytes": 111,
+          "char_count": 108,
+          "word_count": 11,
+          "token_count": 99,
+          "bytes_per_token": 1.121,
+          "chars_per_token": 1.091,
+          "fertility": 9.0,
+          "merged_token_emissions": 1,
+          "tokens_saved": -2,
+          "fallback_tokens": 2,
+          "fallback_rate_pct": 2.02
+        },
+        "web:hi": {
+          "stratum": "web:hi",
+          "language": "hi",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 237,
+          "normalized_bytes": 237,
+          "char_count": 89,
+          "word_count": 16,
+          "token_count": 131,
+          "bytes_per_token": 1.809,
+          "chars_per_token": 0.679,
+          "fertility": 8.188,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 75,
+          "fallback_rate_pct": 57.25
+        },
+        "web:ml": {
+          "stratum": "web:ml",
+          "language": "ml",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 291,
+          "normalized_bytes": 291,
+          "char_count": 105,
+          "word_count": 11,
+          "token_count": 157,
+          "bytes_per_token": 1.854,
+          "chars_per_token": 0.669,
+          "fertility": 14.273,
+          "merged_token_emissions": 0,
+          "tokens_saved": -4,
+          "fallback_tokens": 99,
+          "fallback_rate_pct": 63.06
+        },
+        "web:sw": {
+          "stratum": "web:sw",
+          "language": "sw",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 106,
+          "normalized_bytes": 106,
+          "char_count": 106,
+          "word_count": 16,
+          "token_count": 95,
+          "bytes_per_token": 1.116,
+          "chars_per_token": 1.116,
+          "fertility": 5.938,
+          "merged_token_emissions": 7,
+          "tokens_saved": 6,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 1.05
+        },
+        "web:te": {
+          "stratum": "web:te",
+          "language": "te",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 224,
+          "normalized_bytes": 224,
+          "char_count": 80,
+          "word_count": 8,
+          "token_count": 143,
+          "bytes_per_token": 1.566,
+          "chars_per_token": 0.559,
+          "fertility": 17.875,
+          "merged_token_emissions": 0,
+          "tokens_saved": -3,
+          "fallback_tokens": 96,
+          "fallback_rate_pct": 67.13
+        },
+        "web:yo": {
+          "stratum": "web:yo",
+          "language": "yo",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 162,
+          "normalized_bytes": 162,
+          "char_count": 107,
+          "word_count": 24,
+          "token_count": 93,
+          "bytes_per_token": 1.742,
+          "chars_per_token": 1.151,
+          "fertility": 3.875,
+          "merged_token_emissions": 1,
+          "tokens_saved": -1,
+          "fallback_tokens": 3,
+          "fallback_rate_pct": 3.23
+        },
+        "web:zh": {
+          "stratum": "web:zh",
+          "language": "zh",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 133,
+          "normalized_bytes": 133,
+          "char_count": 45,
+          "word_count": 1,
+          "token_count": 99,
+          "bytes_per_token": 1.343,
+          "chars_per_token": 0.455,
+          "fertility": 99.0,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 82,
+          "fallback_rate_pct": 82.83
+        }
+      }
+    },
+    "CoverageAware_SuperBPE": {
+      "condition_name": "CoverageAware_SuperBPE",
+      "scoring_strategy": "coverage_aware",
+      "target_vocab_size": 650,
+      "actual_vocab_size": 650,
+      "merge_count": 50,
+      "dominance_summary": {
+        "total_merges": 50,
+        "strata_allocation": {
+          "web:ar": 10,
+          "web:am": 4,
+          "web:hi": 1,
+          "web:es": 33,
+          "web:sw": 2
+        },
+        "concentrated_merges_count": 48,
+        "concentrated_merges_percent": 96.0,
+        "strata_represented_count": 5,
+        "herfindahl_index": 0.484
+      },
+      "merges": [
+        {
+          "left": "\u0629",
+          "right": "\u2581",
+          "merged": "\u0629\u2581",
+          "score": -202.3508483131459,
+          "total_frequency": 5,
+          "strata_frequencies": {
+            "web:ar": 5
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0629\u2581",
+          "right": "\u0627",
+          "merged": "\u0629\u2581\u0627",
+          "score": -141.40494355539533,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0629\u2581\u0627",
+          "right": "\u0644",
+          "merged": "\u0629\u2581\u0627\u0644",
+          "score": -145.15252351691643,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u062a",
+          "right": "\u2581",
+          "merged": "\u062a\u2581",
+          "score": -123.22117335744309,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627",
+          "right": "\u062a\u2581",
+          "merged": "\u0627\u062a\u2581",
+          "score": -147.96635910684495,
+          "total_frequency": 3,
+          "strata_frequencies": {
+            "web:ar": 3
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627\u062a\u2581",
+          "right": "\u0627",
+          "merged": "\u0627\u062a\u2581\u0627",
+          "score": -98.3060978026791,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0627\u062a\u2581\u0627",
+          "right": "\u0644",
+          "merged": "\u0627\u062a\u2581\u0627\u0644",
+          "score": -100.29326376311872,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u120d",
+          "right": "\u2581",
+          "merged": "\u120d\u2581",
+          "score": -97.99097446436822,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u122d",
+          "right": "\u2581",
+          "merged": "\u122d\u2581",
+          "score": -98.92770030126096,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u1275",
+          "right": "\u2581",
+          "merged": "\u1275\u2581",
+          "score": -99.89099800262107,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u120b",
+          "right": "\u1275\u2581",
+          "merged": "\u120b\u1275\u2581",
+          "score": -121.5375696738049,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:am": 2
+          },
+          "dominant_stratum": "web:am",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u064a",
+          "right": "\u0629\u2581",
+          "merged": "\u064a\u0629\u2581",
+          "score": -97.97145769523229,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0644",
+          "right": "\u2581",
+          "merged": "\u0644\u2581",
+          "score": -84.19729425894948,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u0928",
+          "right": "\u2581\u092c\u0928\u093e",
+          "merged": "\u0928\u2581\u092c\u0928\u093e",
+          "score": -67.45359496023516,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:hi": 2
+          },
+          "dominant_stratum": "web:hi",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": ".",
+          "right": "\u2581",
+          "merged": ".\u2581",
+          "score": -64.1379685349491,
+          "total_frequency": 30,
+          "strata_frequencies": {
+            "web:en": 8,
+            "web:es": 16,
+            "web:ml": 2,
+            "web:te": 1,
+            "web:sw": 1,
+            "web:yo": 1,
+            "web:ar": 1
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 0.5333333333333333
+        },
+        {
+          "left": ".\u2581",
+          "right": "L",
+          "merged": ".\u2581L",
+          "score": -85.47766239639846,
+          "total_frequency": 17,
+          "strata_frequencies": {
+            "web:es": 16,
+            "web:sw": 1
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 0.9411764705882353
+        },
+        {
+          "left": "\u0645",
+          "right": "\u2581",
+          "merged": "\u0645\u2581",
+          "score": -45.908619167062426,
+          "total_frequency": 2,
+          "strata_frequencies": {
+            "web:ar": 2
+          },
+          "dominant_stratum": "web:ar",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "a",
+          "right": "\u2581",
+          "merged": "a\u2581",
+          "score": -41.2030712439047,
+          "total_frequency": 14,
+          "strata_frequencies": {
+            "web:sw": 14
+          },
+          "dominant_stratum": "web:sw",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581vocabulario",
+          "right": "\u2581con",
+          "merged": "\u2581vocabulario\u2581con",
+          "score": -40.89247901134755,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581secuencia",
+          "right": ".\u2581L",
+          "merged": "\u2581secuencia.\u2581L",
+          "score": -38.371411313735365,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "o",
+          "right": "\u2581de",
+          "merged": "o\u2581de",
+          "score": -37.509373425781654,
+          "total_frequency": 16,
+          "strata_frequencies": {
+            "web:es": 16
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u00f1",
+          "right": "o\u2581de",
+          "merged": "\u00f1o\u2581de",
+          "score": -39.306292182910845,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581robust",
+          "right": "o\u2581de",
+          "merged": "\u2581robusto\u2581de",
+          "score": -35.36626739048357,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581modernos",
+          "right": ".\u2581L",
+          "merged": "\u2581modernos.\u2581L",
+          "score": -35.309721613422674,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "i",
+          "right": "\u2581",
+          "merged": "i\u2581",
+          "score": -34.42646419833596,
+          "total_frequency": 9,
+          "strata_frequencies": {
+            "web:yo": 3,
+            "web:sw": 6
+          },
+          "dominant_stratum": "web:sw",
+          "dominance_ratio": 0.6666666666666666
+        },
+        {
+          "left": "\u2581constituyen",
+          "right": "\u2581la",
+          "merged": "\u2581constituyen\u2581la",
+          "score": -34.377529327875514,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "y",
+          "right": "\u2581sint\u00e1cticas",
+          "merged": "y\u2581sint\u00e1cticas",
+          "score": -33.19593538806382,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581secuencia.\u2581L",
+          "merged": "\u2581de\u2581secuencia.\u2581L",
+          "score": -32.53340184339575,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "y\u2581sint\u00e1cticas",
+          "right": ".",
+          "merged": "y\u2581sint\u00e1cticas.",
+          "score": -32.60268879714941,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u00f1o\u2581de",
+          "right": "l",
+          "merged": "\u00f1o\u2581del",
+          "score": -31.21681206555364,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581subpalabras",
+          "merged": "\u2581de\u2581subpalabras",
+          "score": -31.228458568744145,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la",
+          "right": "\u2581tokenizaci\u00f3n",
+          "merged": "\u2581la\u2581tokenizaci\u00f3n",
+          "score": -31.444795259528068,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la",
+          "right": "\u2581l",
+          "merged": "\u2581la\u2581l",
+          "score": -30.514642357809134,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581l",
+          "right": "on",
+          "merged": "\u2581la\u2581lon",
+          "score": -49.69726510018488,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581lon",
+          "right": "g",
+          "merged": "\u2581la\u2581long",
+          "score": -34.69582005267578,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581long",
+          "right": "i",
+          "merged": "\u2581la\u2581longi",
+          "score": -31.59552929836222,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581longi",
+          "right": "t",
+          "merged": "\u2581la\u2581longit",
+          "score": -32.072336777941864,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581longit",
+          "right": "u",
+          "merged": "\u2581la\u2581longitu",
+          "score": -34.001989238141746,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581la\u2581longitu",
+          "right": "d",
+          "merged": "\u2581la\u2581longitud",
+          "score": -41.26400486990312,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "l",
+          "right": "\u2581procesamiento",
+          "merged": "l\u2581procesamiento",
+          "score": -31.623454671214997,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "E",
+          "right": "l\u2581procesamiento",
+          "merged": "El\u2581procesamiento",
+          "score": -48.42791604123296,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "l",
+          "right": "\u2581t",
+          "merged": "l\u2581t",
+          "score": -30.46447475628086,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "e",
+          "right": "l\u2581t",
+          "merged": "el\u2581t",
+          "score": -32.30377829878958,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "n",
+          "right": "\u2581tratamiento",
+          "merged": "n\u2581tratamiento",
+          "score": -30.990435966013642,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "u",
+          "right": "n\u2581tratamiento",
+          "merged": "un\u2581tratamiento",
+          "score": -35.889234970275474,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "s",
+          "right": "\u2581neuronales",
+          "merged": "s\u2581neuronales",
+          "score": -30.371581198940557,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "o",
+          "right": "s\u2581neuronales",
+          "merged": "os\u2581neuronales",
+          "score": -34.03109516349354,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "s",
+          "right": "\u2581convenciones",
+          "merged": "s\u2581convenciones",
+          "score": -30.95484833032334,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581modernos.\u2581L",
+          "right": "a",
+          "merged": "\u2581modernos.\u2581La",
+          "score": -30.205804602882026,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        },
+        {
+          "left": "\u2581de",
+          "right": "\u2581l",
+          "merged": "\u2581de\u2581l",
+          "score": -30.444723415480247,
+          "total_frequency": 8,
+          "strata_frequencies": {
+            "web:es": 8
+          },
+          "dominant_stratum": "web:es",
+          "dominance_ratio": 1.0
+        }
+      ],
+      "aggregate_tokens": 1154,
+      "aggregate_bytes": 1782,
+      "aggregate_bytes_per_token": 1.544,
+      "strata_metrics": {
+        "web:am": {
+          "stratum": "web:am",
+          "language": "am",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 164,
+          "normalized_bytes": 164,
+          "char_count": 62,
+          "word_count": 12,
+          "token_count": 85,
+          "bytes_per_token": 1.929,
+          "chars_per_token": 0.729,
+          "fertility": 7.083,
+          "merged_token_emissions": 2,
+          "tokens_saved": 3,
+          "fallback_tokens": 42,
+          "fallback_rate_pct": 49.41
+        },
+        "web:ar": {
+          "stratum": "web:ar",
+          "language": "ar",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 147,
+          "normalized_bytes": 147,
+          "char_count": 79,
+          "word_count": 11,
+          "token_count": 72,
+          "bytes_per_token": 2.042,
+          "chars_per_token": 1.097,
+          "fertility": 6.545,
+          "merged_token_emissions": 5,
+          "tokens_saved": 9,
+          "fallback_tokens": 4,
+          "fallback_rate_pct": 5.56
+        },
+        "web:en": {
+          "stratum": "web:en",
+          "language": "en",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 207,
+          "normalized_bytes": 207,
+          "char_count": 207,
+          "word_count": 20,
+          "token_count": 183,
+          "bytes_per_token": 1.131,
+          "chars_per_token": 1.131,
+          "fertility": 9.15,
+          "merged_token_emissions": 1,
+          "tokens_saved": -11,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 0.55
+        },
+        "web:es": {
+          "stratum": "web:es",
+          "language": "es",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 111,
+          "normalized_bytes": 111,
+          "char_count": 108,
+          "word_count": 11,
+          "token_count": 99,
+          "bytes_per_token": 1.121,
+          "chars_per_token": 1.091,
+          "fertility": 9.0,
+          "merged_token_emissions": 1,
+          "tokens_saved": -2,
+          "fallback_tokens": 2,
+          "fallback_rate_pct": 2.02
+        },
+        "web:hi": {
+          "stratum": "web:hi",
+          "language": "hi",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 237,
+          "normalized_bytes": 237,
+          "char_count": 89,
+          "word_count": 16,
+          "token_count": 131,
+          "bytes_per_token": 1.809,
+          "chars_per_token": 0.679,
+          "fertility": 8.188,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 75,
+          "fallback_rate_pct": 57.25
+        },
+        "web:ml": {
+          "stratum": "web:ml",
+          "language": "ml",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 291,
+          "normalized_bytes": 291,
+          "char_count": 105,
+          "word_count": 11,
+          "token_count": 157,
+          "bytes_per_token": 1.854,
+          "chars_per_token": 0.669,
+          "fertility": 14.273,
+          "merged_token_emissions": 0,
+          "tokens_saved": -4,
+          "fallback_tokens": 99,
+          "fallback_rate_pct": 63.06
+        },
+        "web:sw": {
+          "stratum": "web:sw",
+          "language": "sw",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 106,
+          "normalized_bytes": 106,
+          "char_count": 106,
+          "word_count": 16,
+          "token_count": 92,
+          "bytes_per_token": 1.152,
+          "chars_per_token": 1.152,
+          "fertility": 5.75,
+          "merged_token_emissions": 10,
+          "tokens_saved": 9,
+          "fallback_tokens": 1,
+          "fallback_rate_pct": 1.09
+        },
+        "web:te": {
+          "stratum": "web:te",
+          "language": "te",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 224,
+          "normalized_bytes": 224,
+          "char_count": 80,
+          "word_count": 8,
+          "token_count": 143,
+          "bytes_per_token": 1.566,
+          "chars_per_token": 0.559,
+          "fertility": 17.875,
+          "merged_token_emissions": 0,
+          "tokens_saved": -3,
+          "fallback_tokens": 96,
+          "fallback_rate_pct": 67.13
+        },
+        "web:yo": {
+          "stratum": "web:yo",
+          "language": "yo",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 162,
+          "normalized_bytes": 162,
+          "char_count": 107,
+          "word_count": 24,
+          "token_count": 93,
+          "bytes_per_token": 1.742,
+          "chars_per_token": 1.151,
+          "fertility": 3.875,
+          "merged_token_emissions": 1,
+          "tokens_saved": -1,
+          "fallback_tokens": 3,
+          "fallback_rate_pct": 3.23
+        },
+        "web:zh": {
+          "stratum": "web:zh",
+          "language": "zh",
+          "domain": "web",
+          "doc_count": 1,
+          "raw_bytes": 133,
+          "normalized_bytes": 133,
+          "char_count": 45,
+          "word_count": 1,
+          "token_count": 99,
+          "bytes_per_token": 1.343,
+          "chars_per_token": 0.455,
+          "fertility": 99.0,
+          "merged_token_emissions": 0,
+          "tokens_saved": 0,
+          "fallback_tokens": 82,
+          "fallback_rate_pct": 82.83
+        }
+      }
+    }
+  }
+}

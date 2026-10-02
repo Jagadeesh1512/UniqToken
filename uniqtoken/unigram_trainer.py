@@ -866,7 +866,7 @@ class UnigramTrainer:
                             for tok, exp_val in chunk_exp.items():
                                 expected_counts[tok] = expected_counts.get(tok, 0.0) + (exp_val * count)
 
-                    total_expected = sum(expected_counts.values())
+                    total_expected = math.fsum(expected_counts.values())
                     if total_expected <= 0:
                         break
 
@@ -974,7 +974,7 @@ class UnigramTrainer:
                 pbar.close()
 
         # Step 5: Final Probability Re-normalization
-        total_p = sum(math.exp(log_p) for log_p in current_vocab_log_probs.values())
+        total_p = math.fsum(math.exp(log_p) for log_p in current_vocab_log_probs.values())
         final_vocab = {tok: math.log(math.exp(log_p) / total_p) for tok, log_p in current_vocab_log_probs.items()}
 
         # Step 6: Build Integer Token IDs
