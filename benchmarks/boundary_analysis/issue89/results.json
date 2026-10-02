@@ -32,7 +32,7 @@
         "vocabulary_sha256": "161862c02c7e8942386299ff65651c51bbccaa7f2ed42d8919ab22907493e4ea",
         "scores_or_merges_sha256": "cd979b9c22704d76ff3344f04389177c909d410ea58f96ddd9548206de783bee",
         "actual_vocab_size": 1024,
-        "learned_merges": 0
+        "learned_merges": 332
       },
       "SentencePiece-Unigram": {
         "configuration": {
@@ -103,9 +103,9 @@
     "language_model_training": false,
     "identity": {
       "ledger_schema_version": 3,
-      "commit_hash": "8a117cda9c78b4ec1268e3d62831c7e6c87983b4",
+      "commit_hash": "7d0931e212d4430054bab38f3a3940351a4d8657",
       "working_tree_dirty": false,
-      "source_hash": "a814b9d6edd5bc8a6d6dfe558cbe7efee2b8388c48c7c1bf027bf4f53844c01c",
+      "source_hash": "8bc1ef4d4dc6414b55b4e0b62619dfeba08ad48bacce4983a33e5e4bf6ed2d46",
       "extension_hash": "9032d519418328b01cec77ab641ee22c160fcd84cb199e6991d9146509c7ce36",
       "extension_status": "installed",
       "versions": {
