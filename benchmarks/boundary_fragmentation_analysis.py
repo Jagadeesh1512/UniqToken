@@ -888,7 +888,18 @@ def export_all_artifacts(
         },
         "synthetic_diagnostics": {k: [serialize_res(r) for r in v] for k, v in synthetic_results.items()},
         "real_corpus_summary": {k: {d: asdict(m) for d, m in v.items()} for k, v in domain_results.items()},
-        "real_corpus_audits": {name: [serialize_res(r) for r in rows] for name, rows in (real_audits or {}).items()},
+        "real_corpus_span_audit_artifact": "span_audit_examples.jsonl",
+        "real_corpus_diagnostics": {
+            name: [
+                {
+                    key: value
+                    for key, value in asdict(result).items()
+                    if key not in ("audit_tokens", "text", "normalized_text")
+                }
+                for result in rows
+            ]
+            for name, rows in (real_audits or {}).items()
+        },
     }
     (output_dir / "results.json").write_text(json.dumps(res_json, indent=2, ensure_ascii=False), encoding="utf-8")
     research.write_new_json(
