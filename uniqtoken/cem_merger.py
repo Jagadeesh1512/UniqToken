@@ -462,7 +462,7 @@ class CrossEntropyMerging:
         probs: Dict[str, float] = {tok: max(math.exp(lp), 1e-300) for tok, lp in model.vocab.items()}
         for tok, lp in new_probs.items():
             probs[tok] = max(math.exp(lp), 1e-300)
-        total_p = sum(probs.values())
+        total_p = math.fsum(probs.values())
         updated_vocab = {tok: math.log(p / total_p) for tok, p in probs.items()}
 
         token_to_id = dict(model.token_to_id)
