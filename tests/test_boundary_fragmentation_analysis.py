@@ -18,6 +18,7 @@ Validates:
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import List
 import unittest
 
@@ -59,7 +60,7 @@ class TestBoundaryFragmentationAnalysis(unittest.TestCase):
 
         # Build UT-SuperBPE model
         base_tok = CustomTokenizer.train_from_corpus(
-            cls.train_corpus, target_vocab_size=cls.target_vocab - 30, verbose=False
+            cls.train_corpus, target_vocab_size=cls.target_vocab - 30, min_frequency=1, verbose=False
         )
         pretok_chunks = [
             tok
@@ -81,14 +82,12 @@ class TestBoundaryFragmentationAnalysis(unittest.TestCase):
         )
 
         # Build Boundary-BPE model
-        bpe_chunks = [w for doc in cls.train_corpus for w in doc.split() if w]
-        bpe_model = BPETrainer(target_vocab_size=cls.target_vocab, byte_fallback=True).train(
-            bpe_chunks, verbose=False
-        )
+        bpe_chunks = [w for doc in cls.train_corpus for w in re.findall(r"\S+|\s", doc)]
+        bpe_model = BPETrainer(target_vocab_size=cls.target_vocab, byte_fallback=True).train(bpe_chunks, verbose=False)
         cls.bpe_adapter = TokenizerAdapter(
             name="Boundary-BPE",
             vocab_size=len(bpe_model.vocab),
-            encode_pieces_fn=lambda t: [i for w in t.split() for i in bpe_model.encode(w)],
+            encode_pieces_fn=lambda t: [i for w in re.findall(r"\S+|\s", t) for i in bpe_model.encode(w)],
         )
 
     def test_synthetic_fixtures_cover_all_required_boundary_classes(self) -> None:
@@ -105,8 +104,8 @@ class TestBoundaryFragmentationAnalysis(unittest.TestCase):
         }
         self.assertTrue(required.issubset(categories), f"Missing categories: {required - categories}")
 
-    def test_auditable_spans_tile_text_without_gaps_or_overlaps(self) -> None:
-        """Every token's character span must tile the input monotonically without gaps or overlaps."""
+    def test_auditable_byte_spans_tile_text_and_character_spans_cover_source(self) -> None:
+        """Byte spans tile UTF-8; multiple fallback bytes may share a character span."""
         test_strings = [
             "    hello world!",
             "wait... what?!?!?!",
@@ -137,7 +136,7 @@ class TestBoundaryFragmentationAnalysis(unittest.TestCase):
             # 4. Character bounds valid
             for item in res.audit_tokens:
                 s, e = item.char_span
-                self.assertTrue(0 <= s <= e <= len(text), f"Invalid char span [{s}:{e}] for len {len(text)}")
+                self.assertTrue(0 <= s < e <= len(text), f"Invalid char span [{s}:{e}] for len {len(text)}")
 
     def test_whitespace_run_fragmentation_metrics(self) -> None:
         """Whitespace fragmentation metrics must quantify runs, split runs, and excess tokens."""

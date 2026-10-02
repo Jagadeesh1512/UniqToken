@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 import json
 import math
@@ -29,13 +30,12 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import unicodedata
 
-import sentencepiece as spm
-
+from benchmarks import run_phase_a as stages
+from benchmarks import run_research_experiments as research
+from benchmarks.analyze_tokenizer_failures import guard_split_paths
 from benchmarks.run_matched_budget_eval import generate_balanced_multilingual_corpus
-from uniqtoken.bpe_trainer import BPETrainer
 from uniqtoken.byte_codec import ByteFallbackEngine
-from uniqtoken.cem_merger import CrossEntropyMerging
-from uniqtoken.tokenizer import CustomTokenizer
+from uniqtoken.pre_tokenizer import Normalizer
 
 
 # -----------------------------------------------------------------------------
@@ -68,6 +68,8 @@ class TokenAuditItem:
     byte_length: int
     is_cross_word: bool
     is_byte_fallback: bool
+    normalized_char_span: Tuple[int, int]
+    raw_byte_span: Tuple[int, int]
 
 
 @dataclass
@@ -86,6 +88,7 @@ class DiagnosticCaseResult:
     whitespace_fragmentation: RunFragmentation
     punctuation_fragmentation: RunFragmentation
     audit_tokens: List[TokenAuditItem] = field(default_factory=list)
+    normalized_text: str = ""
 
 
 @dataclass
@@ -115,10 +118,12 @@ class TokenizerAdapter:
         name: str,
         vocab_size: int,
         encode_pieces_fn: Callable[[str], List[str]],
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         self.name = name
         self.vocab_size = vocab_size
         self.encode_pieces = encode_pieces_fn
+        self.metadata = metadata or {}
 
 
 # -----------------------------------------------------------------------------
@@ -139,7 +144,7 @@ def character_runs(text: str, predicate: Callable[[str], bool]) -> List[Tuple[in
                 runs.append((start, i, text[start:i]))
                 start = None
     if start is not None:
-        runs.append((start, len(text), text[start:len(text)]))
+        runs.append((start, len(text), text[start : len(text)]))
     return runs
 
 
@@ -158,9 +163,7 @@ def evaluate_run_fragmentation(
 
     for r_start, r_end, _ in runs:
         # Count tokens intersecting this run
-        intersecting = [
-            (s, e) for s, e in char_spans if max(s, r_start) < min(e, r_end)
-        ]
+        intersecting = [(s, e) for s, e in char_spans if max(s, r_start) < min(e, r_end)]
         cnt = len(intersecting)
         intersections += cnt
         if cnt > 1:
@@ -185,18 +188,28 @@ def decode_piece_bytes(piece: str) -> bytes:
     return normalized_piece.encode("utf-8")
 
 
-def audit_tokenize(tokenizer: TokenizerAdapter, text: str, category: str = "", case_name: str = "") -> DiagnosticCaseResult:
+def audit_tokenize(
+    tokenizer: TokenizerAdapter, text: str, category: str = "", case_name: str = ""
+) -> DiagnosticCaseResult:
     """Encodes text, aligns tokens to exact raw character and byte spans, and records fragmentation."""
-    pieces = tokenizer.encode_pieces(text)
+    if research.RESERVED_CORPUS_TEXT.search(text):
+        raise ValueError("reserved control/metaspace text is not supported by this diagnostic")
+    marked, alignment = Normalizer().normalize_with_alignment(text)
+    normalized_text = marked.replace("\u2581", " ")
+    pieces = tokenizer.encode_pieces(normalized_text)
     decoded_bytes_list = [decode_piece_bytes(p) for p in pieces]
+    if any(not part for part in decoded_bytes_list) or b"".join(decoded_bytes_list) != normalized_text.encode("utf-8"):
+        raise ValueError(f"{tokenizer.name}: token pieces must reconstruct normalized source exactly")
 
     # Build byte to character offset map for exact character span alignment
     byte_to_char: List[int] = []
-    for c_idx, char in enumerate(text):
+    for c_idx, char in enumerate(normalized_text):
         char_len = len(char.encode("utf-8"))
         for _ in range(char_len):
             byte_to_char.append(c_idx)
-    byte_to_char.append(len(text))
+    raw_byte_offsets = [0]
+    for char in text:
+        raw_byte_offsets.append(raw_byte_offsets[-1] + len(char.encode("utf-8")))
 
     audit_items: List[TokenAuditItem] = []
     char_spans: List[Tuple[int, int]] = []
@@ -207,12 +220,14 @@ def audit_tokenize(tokenizer: TokenizerAdapter, text: str, category: str = "", c
         b_end = b_offset + len(b_part)
         b_offset = b_end
 
-        c_start = byte_to_char[min(b_start, len(byte_to_char) - 1)]
-        c_end = byte_to_char[min(b_end, len(byte_to_char) - 1)]
-        char_span = (c_start, c_end)
-        char_spans.append(char_span)
+        c_start = byte_to_char[b_start]
+        c_end = byte_to_char[b_end - 1] + 1
+        normalized_span = (c_start, c_end)
+        char_spans.append(normalized_span)
+        source_spans = alignment[c_start:c_end]
+        char_span = (min(start for start, _ in source_spans), max(end for _, end in source_spans))
 
-        span_text = text[c_start:c_end]
+        span_text = normalized_text[c_start:c_end]
         is_cross = bool(re.search(r"\S\s+\S", span_text))
         is_byte = ByteFallbackEngine.is_byte_token(piece)
 
@@ -224,19 +239,21 @@ def audit_tokenize(tokenizer: TokenizerAdapter, text: str, category: str = "", c
                 byte_length=len(b_part),
                 is_cross_word=is_cross,
                 is_byte_fallback=is_byte,
+                normalized_char_span=normalized_span,
+                raw_byte_span=(raw_byte_offsets[char_span[0]], raw_byte_offsets[char_span[1]]),
             )
         )
 
     # Calculate fragmentation
-    ws_runs = character_runs(text, str.isspace)
-    punct_runs = character_runs(text, lambda c: unicodedata.category(c).startswith("P"))
+    ws_runs = character_runs(normalized_text, str.isspace)
+    punct_runs = character_runs(normalized_text, lambda c: unicodedata.category(c).startswith("P"))
 
     ws_frag = evaluate_run_fragmentation(ws_runs, char_spans)
     punct_frag = evaluate_run_fragmentation(punct_runs, char_spans)
 
     token_count = len(pieces)
-    char_count = len(text)
-    byte_count = len(text.encode("utf-8"))
+    char_count = len(normalized_text)
+    byte_count = len(normalized_text.encode("utf-8"))
     bpt = byte_count / max(token_count, 1)
     tpc = token_count / max(char_count, 1)
     cross_word_cnt = sum(1 for it in audit_items if it.is_cross_word)
@@ -257,6 +274,7 @@ def audit_tokenize(tokenizer: TokenizerAdapter, text: str, category: str = "", c
         whitespace_fragmentation=ws_frag,
         punctuation_fragmentation=punct_frag,
         audit_tokens=audit_items,
+        normalized_text=normalized_text,
     )
 
 
@@ -465,87 +483,43 @@ def build_synthetic_fixtures() -> List[Dict[str, str]]:
 def train_all_tokenizers(train_docs: List[str], target_vocab: int = 1024) -> Dict[str, TokenizerAdapter]:
     """Trains UT-SuperBPE, Boundary-BPE, and SentencePiece-Unigram to the exact same matched budget."""
     adapters: Dict[str, TokenizerAdapter] = {}
-
-    # 1. Boundary-BPE
-    # Uses pure BPE strictly isolated within non-whitespace and whitespace chunks
-    bpe_chunks = [w for doc in train_docs for w in re.findall(r"\S+|\s", doc) if w]
-    bpe_model = BPETrainer(target_vocab_size=target_vocab, byte_fallback=True).train(bpe_chunks, verbose=False)
-
-    def _encode_boundary_bpe(t: str) -> List[str]:
-        # Encode strictly within whitespace-isolated chunks
-        tokens: List[str] = []
-        for m in re.finditer(r"\S+|\s", t):
-            chunk = m.group()
-            tokens.extend(bpe_model.encode(chunk))
-        return tokens
-
-    adapters["Boundary-BPE"] = TokenizerAdapter(
-        name="Boundary-BPE",
-        vocab_size=len(bpe_model.vocab),
-        encode_pieces_fn=_encode_boundary_bpe,
+    normalized = [research.normalize(text) for text in train_docs]
+    research.require(all(normalized), "nonempty training documents required")
+    research.require(
+        not any(research.RESERVED_CORPUS_TEXT.search(text) for text in normalized), "reserved training text"
     )
+    with tempfile.TemporaryDirectory() as temporary:
+        for name, label in (
+            ("boundary_bpe", "Boundary-BPE"),
+            ("sp_unigram", "SentencePiece-Unigram"),
+            ("uniq_superbpe", "UT-SuperBPE"),
+        ):
+            tok = research.train_tokenizer(name, normalized, target_vocab, Path(temporary) / name)[0]
+            research.validate_tokenizer(tok, target_vocab)
 
-    # 2. SentencePiece-Unigram
-    # Standard SentencePiece Unigram with byte fallback
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        sp_corpus = Path(tmp_dir) / "sp_train.txt"
-        sp_corpus.write_text("\n".join(train_docs), encoding="utf-8")
-        sp_prefix = Path(tmp_dir) / "sp_model"
-        spm.SentencePieceTrainer.train(
-            input=str(sp_corpus),
-            model_prefix=str(sp_prefix),
-            vocab_size=target_vocab,
-            model_type="unigram",
-            character_coverage=0.9995,
-            byte_fallback=True,
-            add_dummy_prefix=False,
-            hard_vocab_limit=True,
-            minloglevel=2,
-        )
-        sp_proc = spm.SentencePieceProcessor(model_file=str(sp_prefix) + ".model")
+            # The shared factory validates four control IDs and all 256 byte IDs,
+            # preserves whitespace, and separates CEM training documents with EOS.
+            def encode(text: str, model: Any = tok) -> List[str]:
+                return [model.piece_for_id(index) for index in model.encode(text)]
 
-        def _encode_sp(t: str) -> List[str]:
-            return list(sp_proc.encode_as_pieces(t))
-
-        adapters["SentencePiece-Unigram"] = TokenizerAdapter(
-            name="SentencePiece-Unigram",
-            vocab_size=sp_proc.get_piece_size(),
-            encode_pieces_fn=_encode_sp,
-        )
-
-    # 3. UT-SuperBPE
-    # Unigram seed + CrossEntropyMerging with cross_word=True
-    merges = min(target_vocab // 10, 4000)
-    base_target = max(target_vocab - merges, target_vocab // 2)
-    actual_merges = target_vocab - base_target
-
-    base_tok = CustomTokenizer.train_from_corpus(
-        corpus=train_docs,
-        target_vocab_size=base_target,
-        verbose=False,
-    )
-    pretok_chunks = [
-        tok
-        for d in train_docs
-        for tok in base_tok.pre_tokenizer.pre_tokenize(base_tok.normalizer.normalize(d))
-    ]
-    cem = CrossEntropyMerging(max_merges=actual_merges, cross_word=True, verbose=False)
-    sbp_model = cem.optimize(base_tok.model, chunks=pretok_chunks)
-    sbp_tok = CustomTokenizer(
-        normalizer=base_tok.normalizer,
-        pre_tokenizer=base_tok.pre_tokenizer,
-        model=sbp_model,
-    )
-
-    def _encode_superbpe(t: str) -> List[str]:
-        return [tok.text for tok in sbp_tok.encode_with_offsets(t)]
-
-    adapters["UT-SuperBPE"] = TokenizerAdapter(
-        name="UT-SuperBPE",
-        vocab_size=len(sbp_tok.model.vocab),
-        encode_pieces_fn=_encode_superbpe,
-    )
-
+            if name == "sp_unigram":
+                scores = [tok.model.get_score(index) for index in range(target_vocab)]
+            elif name == "uniq_superbpe":
+                scores = sorted(tok.model.model.vocab.items())
+            else:
+                scores = sorted((left, right, rank) for (left, right), rank in tok.model.merges.items())
+            adapters[label] = TokenizerAdapter(
+                label,
+                len(tok.vocab),
+                encode,
+                metadata={
+                    "configuration": research.tokenizer_configuration(name, target_vocab),
+                    "vocabulary_sha256": research.digest(tok.vocab),
+                    "scores_or_merges_sha256": research.digest(scores),
+                    "actual_vocab_size": len(tok.vocab),
+                    "learned_merges": tok.merges,
+                },
+            )
     return adapters
 
 
@@ -554,93 +528,122 @@ def train_all_tokenizers(train_docs: List[str], target_vocab: int = 1024) -> Dic
 # -----------------------------------------------------------------------------
 
 
+def load_frozen_probes(dataset_path: Path, per_stratum: int = 5, excerpt_chars: int = 256):
+    """Read frozen train/validation only; source training probes are explicitly labeled."""
+    research.require(per_stratum > 0 and excerpt_chars > 0, "positive probe caps required")
+    manifest = research.read_json(dataset_path)
+    guard_split_paths(dataset_path, manifest)
+    train_rows, _, validation_rows, _, provenance = stages.load_stage_source(dataset_path)
+    research.require(
+        not {row["id"] for row in train_rows}.intersection(row["id"] for row in validation_rows),
+        "train/validation document ID leakage",
+    )
+    probes: Dict[str, List[Dict[str, Any]]] = {}
+    for role, rows in (("validation", validation_rows), ("train_probe", train_rows)):
+        counts: Counter[str] = Counter()
+        for row in rows:
+            if role == "train_probe" and row["domain"] not in ("code", "latin_english"):
+                continue
+            key = f"{role}/{row['domain']}/{row['language']}"
+            if counts[key] >= per_stratum:
+                continue
+            text = row["text"][:excerpt_chars]
+            research.require(text, "empty source excerpt")
+            probes.setdefault(key, []).append(
+                {
+                    "id": row["id"],
+                    "source_role": role,
+                    "domain": row["domain"],
+                    "language": row["language"],
+                    "source_document_sha256": research.digest(row["text"]),
+                    "excerpt_raw_char_span": [0, len(text)],
+                    "normalized_excerpt_sha256": research.digest(research.normalize(text)),
+                    "text": text,
+                }
+            )
+            counts[key] += 1
+    research.require(probes, "no frozen source probes selected")
+    return probes, {
+        **provenance,
+        "probe_policy": "first_documents_in_frozen_order_prefix_unicode_characters_v1",
+        "documents_per_stratum_cap": per_stratum,
+        "excerpt_characters_cap": excerpt_chars,
+        "probe_assignment_sha256": research.digest(probes),
+        "strata": {key: len(rows) for key, rows in sorted(probes.items())},
+        "source_training_probes_are_original_phase_a_validation": False,
+    }
+
+
 class BoundaryFragmentationBenchmark:
     def __init__(self, target_vocab: int = 1024, num_docs_per_lang: int = 40, seed: int = 42):
+        research.require(target_vocab > 260 and num_docs_per_lang > 0, "invalid budget or training document count")
         self.target_vocab = target_vocab
         self.num_docs_per_lang = num_docs_per_lang
         self.seed = seed
+        self.real_audits: Dict[str, List[DiagnosticCaseResult]] = {}
+        self.metadata: Dict[str, Any] = {}
 
-    def run_benchmark(self) -> Tuple[
-        Dict[str, List[DiagnosticCaseResult]],
-        Dict[str, Dict[str, AggregateDomainMetrics]],
-    ]:
-        print(f"Generating balanced multi-domain corpus ({self.num_docs_per_lang} docs/lang, seed={self.seed})...")
-        train_docs, val_by_domain = generate_balanced_multilingual_corpus(
-            num_docs_per_lang=self.num_docs_per_lang, seed=self.seed
-        )
-
-        print(f"Training 3 tokenizers to exact matched budget V={self.target_vocab}...")
+    def run_benchmark(self, probes=None):
+        train_docs, _ = generate_balanced_multilingual_corpus(num_docs_per_lang=self.num_docs_per_lang, seed=self.seed)
+        training_hashes = {research.digest(research.normalize(text)) for text in train_docs}
+        probes = probes or {}
+        for rows in probes.values():
+            research.require(
+                not any(research.digest(research.normalize(row["text"])) in training_hashes for row in rows),
+                "synthetic training/source probe leakage",
+            )
         tokenizers = train_all_tokenizers(train_docs, target_vocab=self.target_vocab)
-        for name, tok in tokenizers.items():
-            print(f" - {name}: vocab_size={tok.vocab_size}")
-            assert tok.vocab_size == self.target_vocab, f"{name} vocab mismatch: {tok.vocab_size} != {self.target_vocab}"
-
-        # 1. Run Synthetic Diagnostics
-        fixtures = build_synthetic_fixtures()
-        print(f"Evaluating {len(fixtures)} synthetic fixtures across each boundary class...")
+        self.metadata = {
+            "target_vocab": self.target_vocab,
+            "training": {
+                "kind": "controlled_generated_synthetic",
+                "docs_per_lang": self.num_docs_per_lang,
+                "seed": self.seed,
+                "documents": len(train_docs),
+                "normalized_assignment_sha256": research.digest([research.normalize(text) for text in train_docs]),
+            },
+            "normalization": research.NORMALIZATION,
+            "tokenizers": {name: tok.metadata for name, tok in tokenizers.items()},
+            "test_access": "forbidden_not_opened",
+            "language_model_training": False,
+        }
         synthetic_results: Dict[str, List[DiagnosticCaseResult]] = {name: [] for name in tokenizers}
-        for fix in fixtures:
+        for fixture in build_synthetic_fixtures():
             for name, tok in tokenizers.items():
-                res = audit_tokenize(
-                    tokenizer=tok,
-                    text=fix["text"],
-                    category=fix["category"],
-                    case_name=fix["name"],
+                synthetic_results[name].append(
+                    audit_tokenize(tok, fixture["text"], fixture["category"], fixture["name"])
                 )
-                synthetic_results[name].append(res)
-
-        # 2. Run Real-Corpus Diagnostics
-        print("Evaluating frozen real-corpus validation splits across domains/scripts...")
         domain_results: Dict[str, Dict[str, AggregateDomainMetrics]] = {name: {} for name in tokenizers}
-        for domain, text in val_by_domain.items():
-            lines = [l for l in text.splitlines() if l.strip()][:30]
+        self.real_audits = {name: [] for name in tokenizers}
+        for domain, rows in sorted(probes.items()):
             for name, tok in tokenizers.items():
-                doc_count = len(lines)
-                tot_tokens = 0
-                tot_chars = 0
-                tot_bytes = 0
-                tot_cross = 0
-                ws_acc = RunFragmentation()
-                punct_acc = RunFragmentation()
-
-                for line in lines:
-                    res = audit_tokenize(tokenizer=tok, text=line)
-                    tot_tokens += res.token_count
-                    tot_chars += res.char_count
-                    tot_bytes += res.byte_count
-                    tot_cross += res.cross_word_tokens
-
-                    ws_acc.run_count += res.whitespace_fragmentation.run_count
-                    ws_acc.total_characters += res.whitespace_fragmentation.total_characters
-                    ws_acc.token_intersections += res.whitespace_fragmentation.token_intersections
-                    ws_acc.split_runs += res.whitespace_fragmentation.split_runs
-                    ws_acc.excess_fragments += res.whitespace_fragmentation.excess_fragments
-
-                    punct_acc.run_count += res.punctuation_fragmentation.run_count
-                    punct_acc.total_characters += res.punctuation_fragmentation.total_characters
-                    punct_acc.token_intersections += res.punctuation_fragmentation.token_intersections
-                    punct_acc.split_runs += res.punctuation_fragmentation.split_runs
-                    punct_acc.excess_fragments += res.punctuation_fragmentation.excess_fragments
-
-                bpt = tot_bytes / max(tot_tokens, 1)
-                tpc = tot_tokens / max(tot_chars, 1)
-                cross_rate = (tot_cross / max(tot_tokens, 1)) * 100.0
-
+                results = [audit_tokenize(tok, row["text"], domain, row["id"]) for row in rows]
+                self.real_audits[name].extend(results)
+                counts = {}
+                for field_name in ("whitespace_fragmentation", "punctuation_fragmentation"):
+                    counts[field_name] = RunFragmentation(
+                        **{
+                            field: sum(getattr(getattr(result, field_name), field) for result in results)
+                            for field in RunFragmentation.__dataclass_fields__
+                        }
+                    )
+                tokens = sum(result.token_count for result in results)
+                chars = sum(result.char_count for result in results)
+                byte_count = sum(result.byte_count for result in results)
+                cross = sum(result.cross_word_tokens for result in results)
                 domain_results[name][domain] = AggregateDomainMetrics(
                     domain=domain,
                     tokenizer_name=name,
-                    document_count=doc_count,
-                    total_tokens=tot_tokens,
-                    total_characters=tot_chars,
-                    total_bytes=tot_bytes,
-                    bytes_per_token=round(bpt, 3),
-                    tokens_per_char=round(tpc, 3),
-                    cross_word_tokens=tot_cross,
-                    cross_word_rate_percent=round(cross_rate, 2),
-                    whitespace_fragmentation=ws_acc,
-                    punctuation_fragmentation=punct_acc,
+                    document_count=len(results),
+                    total_tokens=tokens,
+                    total_characters=chars,
+                    total_bytes=byte_count,
+                    bytes_per_token=byte_count / tokens,
+                    tokens_per_char=tokens / chars,
+                    cross_word_tokens=cross,
+                    cross_word_rate_percent=100 * cross / tokens,
+                    **counts,
                 )
-
         return synthetic_results, domain_results
 
 
@@ -654,155 +657,96 @@ def format_markdown_report(
     domain_results: Dict[str, Dict[str, AggregateDomainMetrics]],
     vocab_size: int,
 ) -> str:
+    names = ("Boundary-BPE", "SentencePiece-Unigram", "UT-SuperBPE")
     lines = [
-        "# Research Report: Whitespace and Boundary Fragmentation Analysis (Issue #89)",
+        "# Whitespace and Boundary Fragmentation Analysis (Issue #89)",
         "",
-        "## 1. Executive Summary & Research Scope",
+        f"Three tokenizer conditions have exactly {vocab_size} vocabulary IDs, including",
+        "the same four controls and all 256 byte fallback IDs. Each learns from the same",
+        "controlled synthetic training documents. These are small transfer diagnostics,",
+        "not models trained on the frozen real corpus and not a ranking of architectures.",
         "",
-        "**Core Question**: *How do subword tokenizers differ in their treatment of token boundaries, "
-        "and to what extent does boundary isolation create artificial fragmentation across whitespace runs, "
-        "punctuation, mixed alphanumeric strings, code symbols, and script transitions?*",
+        "NFKC and Unicode space mapping are shared. Leading spaces, repeated spaces,",
+        "tabs and newlines are preserved. Every scored encoding reconstructs normalized",
+        "UTF-8 exactly; deleted whitespace is an error, not a compression improvement.",
+        "Boundary-BPE isolates each whitespace character; SPM uses identity normalization",
+        "after shared preprocessing, and UT uses its default pre-tokenizer and SuperBPE pass.",
         "",
-        f"This experiment rigorously benchmarks three architectures at matched vocabulary budget ($V = {vocab_size}$):",
-        "1. **UT-SuperBPE**: Cross-Entropy Merging on Unigram base with cross-word merge capacity.",
-        "2. **Boundary-BPE**: Byte-Pair Encoding strictly partitioned at whitespace boundaries (never merges across whitespace).",
-        "3. **SentencePiece-Unigram**: Standard unigram model with byte fallback and leading-whitespace piece binding.",
+        "## Synthetic Fixtures",
         "",
-        "### Key Empirical Findings",
-        "- **Whitespace Run Consolidation**: Under `Boundary-BPE`, indentation runs (e.g. 4-space, 8-space, tabs) "
-        "are fragmented into multiple single-space tokens. In contrast, `UT-SuperBPE` compresses indentation runs "
-        "into consolidated tokens, reducing whitespace excess fragments by **30–60%**.",
-        "- **Code & Compound Operators**: `Boundary-BPE` and `UT-SuperBPE` efficiently capture multi-character code operators "
-        "(`===`, `->`, `::`), whereas `SentencePiece` frequently fragments code symbols due to unigram penalty structures.",
-        "- **Cross-Word Phrase Efficiency**: `UT-SuperBPE` learns high-utility cross-word phrases (`in the`, `of the`), "
-        "achieving up to **10–15% higher bytes/token** on repetitive grammatical constructions without increasing single-word fragmentation.",
-        "- **Script-Specific Boundary Nuance**: CJK and Indic scripts demonstrate that whitespace-word fertility is "
-        "invalid as a cross-lingual metric. On non-segmenting CJK and virama-combining Indic scripts, UT-SuperBPE and "
-        "SentencePiece achieve superior tokens/character compared to Boundary-BPE.",
-        "",
-        "---",
-        "",
-        "## 2. Controlled Synthetic Diagnostics",
-        "",
-        "| Category | Test Case | Metric | Boundary-BPE | SentencePiece-Unigram | UT-SuperBPE |",
-        "| :--- | :--- | :---: | :---: | :---: | :---: |",
+        "| Category | Case | Tokens: BPE / SPM / UT | Bytes/token: BPE / SPM / UT |",
+        "| --- | --- | --- | --- |",
     ]
-
-    # Map by case_name
-    case_names = [c.case_name for c in synthetic_results["UT-SuperBPE"]]
-    for c_name in case_names:
-        b_res = next(r for r in synthetic_results["Boundary-BPE"] if r.case_name == c_name)
-        s_res = next(r for r in synthetic_results["SentencePiece-Unigram"] if r.case_name == c_name)
-        u_res = next(r for r in synthetic_results["UT-SuperBPE"] if r.case_name == c_name)
-
-        lines.append(
-            f"| `{u_res.category}` | `{c_name}` | Tokens (lower=better) | {b_res.token_count} | {s_res.token_count} | **{u_res.token_count}** |"
-        )
-        lines.append(
-            f"| | | Bytes/Token (higher=better) | {b_res.bytes_per_token:.2f} | {s_res.bytes_per_token:.2f} | **{u_res.bytes_per_token:.2f}** |"
-        )
-
+    indexed = {name: {r.case_name: r for r in synthetic_results[name]} for name in names}
+    for result in synthetic_results[names[0]]:
+        rows = [indexed[name][result.case_name] for name in names]
+        tokens = " / ".join(str(row.token_count) for row in rows)
+        ratios = " / ".join(f"{row.bytes_per_token:.3f}" for row in rows)
+        lines.append(f"| {result.category} | {result.case_name} | {tokens} | {ratios} |")
     lines.extend(
         [
             "",
-            "---",
+            "## Observed Whitespace Fragmentation",
             "",
-            "## 3. Real-Corpus Validation Across Scripts & Code",
-            "",
-            "| Domain | Script / Type | Metric | Boundary-BPE | SentencePiece-Unigram | UT-SuperBPE | Delta (UT vs SP) |",
-            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: |",
+            "| Tokenizer | Fixture whitespace runs | Split runs | Excess fragments | Cross-field token emissions |",
+            "| --- | --- | --- | --- | --- |",
         ]
     )
-
-    domains = sorted(domain_results["UT-SuperBPE"].keys())
-    domain_types = {
-        "English": "Latin / High Resource",
-        "Finnish": "Latin / Agglutinative",
-        "Chinese": "Han / Unsegmented",
-        "Hindi": "Devanagari / Combining",
-        "Telugu": "Telugu / Combining",
-        "Arabic": "Arabic / Connecting",
-        "Russian": "Cyrillic",
-        "Code": "Programming Syntax",
-    }
-
-    for d in domains:
-        b_m = domain_results["Boundary-BPE"][d]
-        s_m = domain_results["SentencePiece-Unigram"][d]
-        u_m = domain_results["UT-SuperBPE"][d]
-
-        bpt_delta = f"{((u_m.bytes_per_token - s_m.bytes_per_token) / s_m.bytes_per_token) * 100:+.1f}%"
-        lines.append(
-            f"| **{d}** | {domain_types.get(d, 'Natural')} | Bytes/Token | {b_m.bytes_per_token:.2f} | {s_m.bytes_per_token:.2f} | **{u_m.bytes_per_token:.2f}** | **{bpt_delta}** |"
-        )
-        lines.append(
-            f"| | | Tokens/Char | {b_m.tokens_per_char:.2f} | {s_m.tokens_per_char:.2f} | **{u_m.tokens_per_char:.2f}** | |"
-        )
-        lines.append(
-            f"| | | Split WS Runs (%) | {b_m.whitespace_fragmentation.split_run_percent:.1f}% | {s_m.whitespace_fragmentation.split_run_percent:.1f}% | {u_m.whitespace_fragmentation.split_run_percent:.1f}% | |"
-        )
-        lines.append(
-            f"| | | Cross-Word Tokens (%) | {b_m.cross_word_rate_percent:.1f}% | {s_m.cross_word_rate_percent:.1f}% | {u_m.cross_word_rate_percent:.1f}% | |"
-        )
-
+    for name in names:
+        rows = synthetic_results[name]
+        runs = sum(r.whitespace_fragmentation.run_count for r in rows)
+        splits = sum(r.whitespace_fragmentation.split_runs for r in rows)
+        excess = sum(r.whitespace_fragmentation.excess_fragments for r in rows)
+        cross = sum(r.cross_word_tokens for r in rows)
+        lines.append(f"| {name} | {runs} | {splits} | {excess} | {cross} |")
     lines.extend(
         [
             "",
-            "---",
+            "## Frozen Real Source Probes",
             "",
-            "## 4. Auditable Token Span Trace (Representative Examples)",
+            "The role is part of every stratum name. `validation/` uses original frozen",
+            "validation documents. `train_probe/` uses original source training English",
+            "and code documents, unseen by these newly synthetic-trained models. These",
+            "are not Phase A held-out validation. No frozen assignments were changed.",
+            "The retained run uses at most five documents per stratum, truncated to the",
+            "first 256 raw Unicode characters. IDs, source document hashes, excerpt spans",
+            "and input hashes are in results.json. This bounded prefix sample is not representative.",
             "",
-            "Detailed token-level spans tiling normalized text for representative test cases:",
-            "",
+            "| Source role / domain / language | Documents | Bytes/token: BPE / SPM / UT | Tokens/char: BPE / SPM / UT |",
+            "| --- | --- | --- | --- |",
         ]
     )
-
-    representative_cases = [
-        "four_space_indent",
-        "ellipsis_repeats",
-        "semver_version",
-        "strict_equality_and_logical",
-        "common_prepositional_phrases",
-        "cjk_mandarin_unsegmented",
-        "indic_hindi_virama_conjuncts",
-    ]
-
-    for c_name in representative_cases:
-        lines.append(f"### Diagnostic Case: `{c_name}`")
-        u_res = next(r for r in synthetic_results["UT-SuperBPE"] if r.case_name == c_name)
-        lines.append(f"- **Raw Text**: `{repr(u_res.text)}`")
-        lines.append("")
-        lines.append("| Tokenizer | Emitted Tokens | Spans `[start, end]` | Cross-Word? |")
-        lines.append("| :--- | :--- | :--- | :---: |")
-
-        for tok_name in ("Boundary-BPE", "SentencePiece-Unigram", "UT-SuperBPE"):
-            c_res = next(r for r in synthetic_results[tok_name] if r.case_name == c_name)
-            toks_str = ", ".join(repr(it.token) for it in c_res.audit_tokens)
-            spans_str = ", ".join(f"[{it.char_span[0]}:{it.char_span[1]}]" for it in c_res.audit_tokens)
-            cross_str = "Yes" if c_res.cross_word_tokens > 0 else "No"
-            lines.append(f"| **{tok_name}** | `{toks_str}` | `{spans_str}` | {cross_str} |")
-        lines.append("")
-
+    for domain in sorted(domain_results[names[0]]):
+        domain_rows = [domain_results[name][domain] for name in names]
+        ratios = " / ".join(f"{row.bytes_per_token:.3f}" for row in domain_rows)
+        chars = " / ".join(f"{row.tokens_per_char:.3f}" for row in domain_rows)
+        lines.append(f"| {domain} | {domain_rows[0].document_count} | {ratios} | {chars} |")
+    if not domain_results[names[0]]:
+        lines.append("No frozen corpus was supplied; this run contains synthetic evidence only.")
     lines.extend(
         [
-            "---",
             "",
-            "## 5. Research Integrity & Methodological Restraints",
+            "## Audit and Interpretation",
             "",
-            "- **Separation of Token Boundaries from Morphology**: Subword tokens are statistical segments derived from "
-            "algorithmic frequency or likelihood optimization. **No claim is made that subword tokens correspond to grammatical "
-            "morphemes, roots, affixes, or clitics**.",
-            "- **Rejection of Whitespace-Word Fertility as a Cross-Script Metric**: "
-            "Whitespace-delimited word counting is mathematically ill-posed in unsegmented scripts (CJK) and linguistically "
-            "incongruent in agglutinative (Finnish) or complex combining scripts (Indic Devanagari, Telugu). The study relies exclusively "
-            "on script-invariant metrics: **normalized UTF-8 bytes per token** and **tokens per Unicode codepoint**.",
-            "- **Zero Test-Set Access & No Language Model Training**: Merge models were trained solely on synthetic/training corpora. "
-            "Validation was executed strictly on disjoint validation splits without opening held-out test splits.",
-            "- **Strict Matched Budget Invariance**: Exactly identical vocabulary limits ($V = 1024$) and 256 byte fallbacks "
-            "were validated across all evaluated tokenizer models.",
+            "- Normalized byte spans tile reconstructed UTF-8 exactly. Raw character and raw",
+            "  byte spans are source envelopes. Byte fallback pieces within one multibyte",
+            "  character share its nonempty raw character span; NFKC expansions may also overlap.",
+            "- Fragmentation counts every token intersecting a maximal whitespace or Unicode",
+            "  category P punctuation run, including every byte fallback fragment.",
+            "- Cross-field tokens intersect two non-whitespace fields separated by whitespace;",
+            "  this is an emission count, not a count of binary merge applications.",
+            "- Bytes/token and tokens/Unicode character use pooled normalized source counts.",
+            "  The JSONL audit includes synthetic fixtures and every frozen source excerpt.",
+            "- Separation of token boundaries from linguistic morphology is explicit:",
+            "  no claim is made about preserving morphemes, roots, affixes or clitics.",
+            "  Whitespace-word fertility is invalid as a universal cross-script metric.",
+            "- Differences describe these configurations, budgets, training data and probes.",
+            "  They do not isolate an algorithmic cause or establish general superiority.",
+            "- No language model was trained. Only frozen train/validation files were read;",
+            "  the declared test path was checked for aliases but never opened or hashed.",
+            "",
         ]
     )
-
     return "\n".join(lines)
 
 
@@ -811,8 +755,10 @@ def export_all_artifacts(
     domain_results: Dict[str, Dict[str, AggregateDomainMetrics]],
     vocab_size: int,
     output_dir: Path,
+    metadata: Optional[Dict[str, Any]] = None,
+    real_audits: Optional[Dict[str, List[DiagnosticCaseResult]]] = None,
 ) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=False)
 
     # 1. REPORT.md
     report_text = format_markdown_report(synthetic_results, domain_results, vocab_size)
@@ -908,14 +854,17 @@ def export_all_artifacts(
     span_jsonl = output_dir / "span_audit_examples.jsonl"
     with span_jsonl.open("w", encoding="utf-8") as f:
         for tok_name, r_list in synthetic_results.items():
-            for r in r_list:
+            for r in r_list + (real_audits or {}).get(tok_name, []):
                 payload = {
                     "tokenizer": tok_name,
                     "category": r.category,
                     "case_name": r.case_name,
                     "text": r.text,
+                    "normalized_text": r.normalized_text,
                     "tokens": [it.token for it in r.audit_tokens],
                     "char_spans": [list(it.char_span) for it in r.audit_tokens],
+                    "normalized_char_spans": [list(it.normalized_char_span) for it in r.audit_tokens],
+                    "raw_byte_spans": [list(it.raw_byte_span) for it in r.audit_tokens],
                     "byte_spans": [list(it.byte_span) for it in r.audit_tokens],
                     "byte_lengths": [it.byte_length for it in r.audit_tokens],
                     "is_cross_word": [it.is_cross_word for it in r.audit_tokens],
@@ -933,17 +882,31 @@ def export_all_artifacts(
 
     res_json = {
         "metadata": {
+            **(metadata or {}),
             "target_vocab": vocab_size,
-            "tokenizers": list(synthetic_results.keys()),
+            "tokenizer_names": list(synthetic_results.keys()),
         },
-        "synthetic_diagnostics": {
-            k: [serialize_res(r) for r in v] for k, v in synthetic_results.items()
-        },
-        "real_corpus_summary": {
-            k: {d: asdict(m) for d, m in v.items()} for k, v in domain_results.items()
-        },
+        "synthetic_diagnostics": {k: [serialize_res(r) for r in v] for k, v in synthetic_results.items()},
+        "real_corpus_summary": {k: {d: asdict(m) for d, m in v.items()} for k, v in domain_results.items()},
+        "real_corpus_audits": {name: [serialize_res(r) for r in rows] for name, rows in (real_audits or {}).items()},
     }
     (output_dir / "results.json").write_text(json.dumps(res_json, indent=2, ensure_ascii=False), encoding="utf-8")
+    research.write_new_json(
+        output_dir / "manifest.json",
+        {
+            "status": "complete",
+            "artifacts": {
+                name: research.file_hash(output_dir / name)
+                for name in (
+                    "REPORT.md",
+                    "synthetic_diagnostics.csv",
+                    "real_corpus_summary.csv",
+                    "span_audit_examples.jsonl",
+                    "results.json",
+                )
+            },
+        },
+    )
 
 
 def run_cli() -> None:
@@ -951,7 +914,7 @@ def run_cli() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        default="benchmarks/boundary_analysis/issue89",
+        default="artifacts/boundary-fragmentation-issue89",
         help="Output path for benchmark reports and JSON/CSV artifacts",
     )
     parser.add_argument(
@@ -972,16 +935,34 @@ def run_cli() -> None:
         default=42,
         help="Random seed for reproducible corpus generation",
     )
+    parser.add_argument("--dataset", type=Path, help="Frozen manifest for train/validation source probes only")
     args = parser.parse_args()
+    out_dir = Path(args.output)
+    research.require(not out_dir.exists(), "output must be a new directory; existing evidence cannot be overwritten")
+    if args.dataset:
+        research.require(
+            not out_dir.resolve().is_relative_to(args.dataset.resolve().parent), "output is inside frozen input"
+        )
+    identity = research.runtime_identity()
+    research.require(not identity["working_tree_dirty"], "commit the experiment before recording research evidence")
+    probes, provenance = load_frozen_probes(args.dataset) if args.dataset else ({}, {"kind": "not_supplied"})
 
     bench = BoundaryFragmentationBenchmark(
         target_vocab=args.vocab_budget,
         num_docs_per_lang=args.docs_per_lang,
         seed=args.seed,
     )
-    synth_res, domain_res = bench.run_benchmark()
-    out_dir = Path(args.output)
-    export_all_artifacts(synth_res, domain_res, args.vocab_budget, out_dir)
+    synth_res, domain_res = bench.run_benchmark(probes)
+    research.require(research.runtime_identity() == identity, "source/runtime changed during analysis")
+    if args.dataset:
+        research.require(
+            research.file_hash(args.dataset) == provenance["manifest_sha256"], "manifest changed during analysis"
+        )
+        paths = guard_split_paths(args.dataset, research.read_json(args.dataset))
+        for split in ("train", "validation"):
+            research.require(research.file_hash(paths[split]) == provenance[f"{split}_file_sha256"], f"{split} changed")
+    bench.metadata.update({"identity": identity, "frozen_source": provenance, "source_probes": probes})
+    export_all_artifacts(synth_res, domain_res, args.vocab_budget, out_dir, bench.metadata, bench.real_audits)
 
     print("\n" + "=" * 80)
     print("BOUNDARY FRAGMENTATION BENCHMARK COMPLETE")
