@@ -65,6 +65,19 @@ class CrossEntropyMerging:
         strata_alpha: float = 0.5,
         coverage_weight: float = 1.0,
     ):
+        """Initializes the CrossEntropyMerging optimizer.
+
+        Args:
+            max_merges: Maximum number of merged tokens to add.
+            max_score: Score threshold (merges with score >= max_score are discarded).
+            verbose: Whether to print progress logs during optimization.
+            cross_word: If True, operates across word boundaries (SuperBPE).
+            space_char: Space token/character used to designate word boundaries.
+            min_pmi: Optional minimum Pointwise Mutual Information threshold.
+            scoring_strategy: Scoring objective ('global', 'balanced', or 'coverage_aware').
+            strata_alpha: Smoothing temperature exponent for stratum-balanced scoring.
+            coverage_weight: Multiplier weight for cross-stratum coverage entropy bonus.
+        """
         if max_merges < 0:
             raise ValueError("max_merges must not be negative")
         if scoring_strategy not in ("global", "balanced", "coverage_aware"):
@@ -101,12 +114,14 @@ class CrossEntropyMerging:
         new_probs: Dict[str, float] = {}
 
         def log_prob(token: str) -> float:
+            """Returns the log probability of a token from model vocab or newly merged tokens."""
             lp = model.vocab.get(token)
             if lp is not None:
                 return lp
             return new_probs[token]
 
         def mergeable(token: str) -> bool:
+            """Checks whether a token is eligible to participate in subword merges."""
             if token in special_tokens:
                 return False
             if byte_pattern.match(token):
@@ -121,9 +136,7 @@ class CrossEntropyMerging:
         if strata is not None:
             strata_raw = list(strata)
             if len(strata_raw) != len(chunks_raw):
-                raise ValueError(
-                    f"Mismatched chunks ({len(chunks_raw)}) and strata ({len(strata_raw)})"
-                )
+                raise ValueError(f"Mismatched chunks ({len(chunks_raw)}) and strata ({len(strata_raw)})")
             chunks_with_strata = [(c, s) for c, s in zip(chunks_raw, strata_raw) if c]
             chunks = [c for c, _ in chunks_with_strata]
             chunk_strata = [s for _, s in chunks_with_strata]
@@ -143,10 +156,11 @@ class CrossEntropyMerging:
                 if not chunk:
                     continue
                 # Split stream if stratum changes so cross-word merges stay intra-stratum
-                if st != cur_stratum and cur_stream:
-                    streams.append(cur_stream)
-                    stream_strata.append(cur_stratum)
-                    cur_stream = []
+                if st != cur_stratum:
+                    if cur_stream:
+                        streams.append(cur_stream)
+                        stream_strata.append(cur_stratum)
+                        cur_stream = []
                     cur_stratum = st
                 cur_stream.extend(chunk_enc_map[chunk])
                 if len(cur_stream) >= 200:
@@ -182,9 +196,14 @@ class CrossEntropyMerging:
         import heapq
 
         def compute_pair_score(a: str, b: str, f: int, tot: int) -> Tuple[float, float, str]:
+            """Computes the merge score, empirical log probability, and concatenated token string."""
             log_p_hat = math.log(f / max(tot, 1))
             pair = (a, b)
-            if self.scoring_strategy == "global" or len(all_active_strata) <= 1:
+            if (
+                self.scoring_strategy == "global"
+                or len(all_active_strata) <= 1
+                or (self.scoring_strategy == "balanced" and abs(self.strata_alpha - 1.0) < 1e-9)
+            ):
                 score = f * (log_prob(a) + log_prob(b) - log_p_hat)
             elif self.scoring_strategy == "balanced":
                 # Stratum-balanced score: cross-entropy reduction reweighted across strata.
@@ -194,16 +213,14 @@ class CrossEntropyMerging:
                 # When \alpha = 1.0, W_s = 1.0 (recovers global scoring).
                 # When \alpha < 1.0, under-represented strata receive higher relative weight per pair.
                 st_counts = pair_strata_counts[pair]
-                denom_weights = sum(
-                    max(stratum_total_pairs[s], 1) ** self.strata_alpha for s in all_active_strata
-                )
+                denom_weights = sum(max(stratum_total_pairs[s], 1) ** self.strata_alpha for s in all_active_strata)
                 sc_sum = 0.0
                 for s in all_active_strata:
                     f_s = st_counts.get(s, 0)
                     if f_s < 1:
                         continue
                     n_s = max(stratum_total_pairs[s], 1)
-                    q_s = (n_s ** self.strata_alpha) / max(denom_weights, 1e-12)
+                    q_s = (n_s**self.strata_alpha) / max(denom_weights, 1e-12)
                     p_s = n_s / max(total_pairs, 1)
                     w_s = q_s / max(p_s, 1e-12)
                     lp_s = math.log(f_s / n_s)
@@ -213,23 +230,25 @@ class CrossEntropyMerging:
             elif self.scoring_strategy == "coverage_aware":
                 # Coverage-aware scoring: combines stratum reweighting with
                 # cross-stratum coverage entropy bonus to reward cross-lingual merges
-                st_counts = pair_strata_counts[pair]
-                denom_weights = sum(
-                    max(stratum_total_pairs[s], 1) ** self.strata_alpha for s in all_active_strata
-                )
-                sc_sum = 0.0
-                for s in all_active_strata:
-                    f_s = st_counts.get(s, 0)
-                    if f_s < 1:
-                        continue
-                    n_s = max(stratum_total_pairs[s], 1)
-                    q_s = (n_s ** self.strata_alpha) / max(denom_weights, 1e-12)
-                    p_s = n_s / max(total_pairs, 1)
-                    w_s = q_s / max(p_s, 1e-12)
-                    lp_s = math.log(f_s / n_s)
-                    reduction_s = f_s * (log_prob(a) + log_prob(b) - lp_s)
-                    sc_sum += w_s * reduction_s
+                if abs(self.strata_alpha - 1.0) < 1e-9:
+                    sc_sum = f * (log_prob(a) + log_prob(b) - log_p_hat)
+                else:
+                    st_counts = pair_strata_counts[pair]
+                    denom_weights = sum(max(stratum_total_pairs[s], 1) ** self.strata_alpha for s in all_active_strata)
+                    sc_sum = 0.0
+                    for s in all_active_strata:
+                        f_s = st_counts.get(s, 0)
+                        if f_s < 1:
+                            continue
+                        n_s = max(stratum_total_pairs[s], 1)
+                        q_s = (n_s**self.strata_alpha) / max(denom_weights, 1e-12)
+                        p_s = n_s / max(total_pairs, 1)
+                        w_s = q_s / max(p_s, 1e-12)
+                        lp_s = math.log(f_s / n_s)
+                        reduction_s = f_s * (log_prob(a) + log_prob(b) - lp_s)
+                        sc_sum += w_s * reduction_s
 
+                st_counts = pair_strata_counts[pair]
                 if len(all_active_strata) > 1 and st_counts:
                     h_entropy = 0.0
                     for f_s in st_counts.values():
@@ -246,6 +265,7 @@ class CrossEntropyMerging:
             return score, log_p_hat, a + b
 
         def is_valid_pair(a_tok: str, b_tok: str) -> bool:
+            """Validates whether a candidate pair conforms to cross-word boundary constraints."""
             if not self.cross_word:
                 return True
             concat = a_tok + b_tok
@@ -276,6 +296,27 @@ class CrossEntropyMerging:
             if not pair_counts or total_pairs <= 0:
                 break
 
+            # In stratified scoring modes, stratum totals change after each merge,
+            # affecting candidate rankings across all strata. Refresh candidate heap.
+            if self.scoring_strategy in ("balanced", "coverage_aware"):
+                heap = []
+                for (a_c, b_c), f_c in pair_counts.items():
+                    if f_c < 2:
+                        continue
+                    if not is_valid_pair(a_c, b_c) or not mergeable(a_c) or not mergeable(b_c):
+                        continue
+                    m_c = a_c + b_c
+                    if len(m_c) > max_len or m_c in model.vocab or m_c in new_probs or m_c in special_tokens:
+                        continue
+                    sc_c, lp_c, _ = compute_pair_score(a_c, b_c, f_c, total_pairs)
+                    if self.min_pmi is not None:
+                        pmi_c = (lp_c - (log_prob(a_c) + log_prob(b_c))) / math.log(2)
+                        if pmi_c < self.min_pmi:
+                            continue
+                    if sc_c < self.max_score:
+                        heap.append((sc_c, -f_c, lp_c, a_c, b_c))
+                heapq.heapify(heap)
+
             best_pair: Tuple[str, str, str] | None = None
             best_score = float("inf")
             best_log_p = 0.0
@@ -284,7 +325,9 @@ class CrossEntropyMerging:
                 sc, neg_f, lp_hat, a, b = heapq.heappop(heap)
                 f_in_heap = -neg_f
                 cur_f = pair_counts.get((a, b), 0)
-                if cur_f >= 2 and cur_f != f_in_heap:
+                if cur_f < 2:
+                    continue
+                if cur_f != f_in_heap:
                     # Count drifted since this entry was pushed; re-score and
                     # re-insert so the pair doesn't transiently drop out of
                     # consideration.
@@ -292,24 +335,27 @@ class CrossEntropyMerging:
                     if sc2 < self.max_score:
                         heapq.heappush(heap, (sc2, -cur_f, lp2, a, b))
                     continue
-                if cur_f >= 2 and cur_f == f_in_heap:
-                    if not is_valid_pair(a, b):
+                if not is_valid_pair(a, b) or not mergeable(a) or not mergeable(b):
+                    continue
+                m = a + b
+                if len(m) > max_len or m in model.vocab or m in new_probs or m in special_tokens:
+                    continue
+                sc_curr, lp_hat_curr, _ = compute_pair_score(a, b, cur_f, total_pairs)
+                if self.min_pmi is not None:
+                    pmi = (lp_hat_curr - (log_prob(a) + log_prob(b))) / math.log(2)
+                    if pmi < self.min_pmi:
                         continue
-                    if not mergeable(a) or not mergeable(b):
-                        continue
-                    m = a + b
-                    if len(m) > max_len or m in model.vocab or m in new_probs or m in special_tokens:
-                        continue
-                    sc, lp_hat, _ = compute_pair_score(a, b, cur_f, total_pairs)
-                    if self.min_pmi is not None:
-                        pmi = (lp_hat - (log_prob(a) + log_prob(b))) / math.log(2)
-                        if pmi < self.min_pmi:
-                            continue
-                    if sc < self.max_score:
-                        best_score = sc
-                        best_pair = (a, b, m)
-                        best_log_p = lp_hat
-                        break
+                if sc_curr >= self.max_score:
+                    continue
+                # If score drifted and is now worse than another item in heap, re-push and continue
+                if heap and sc_curr > heap[0][0]:
+                    heapq.heappush(heap, (sc_curr, -cur_f, lp_hat_curr, a, b))
+                    continue
+
+                best_score = sc_curr
+                best_pair = (a, b, m)
+                best_log_p = lp_hat_curr
+                break
 
             if best_pair is None or best_score >= self.max_score:
                 break
@@ -487,6 +533,18 @@ class SuperBPE(CrossEntropyMerging):
         strata_alpha: float = 0.5,
         coverage_weight: float = 1.0,
     ):
+        """Initializes the SuperBPE cross-word merge optimizer.
+
+        Args:
+            max_merges: Maximum number of cross-word merged tokens to add.
+            max_score: Score threshold (merges with score >= max_score are discarded).
+            verbose: Whether to print progress logs during optimization.
+            space_char: Space token/character designating word boundaries.
+            min_pmi: Optional minimum Pointwise Mutual Information threshold.
+            scoring_strategy: Scoring objective ('global', 'balanced', or 'coverage_aware').
+            strata_alpha: Smoothing temperature exponent for stratum-balanced scoring.
+            coverage_weight: Multiplier weight for cross-stratum coverage entropy bonus.
+        """
         super().__init__(
             max_merges=max_merges,
             max_score=max_score,

@@ -36,6 +36,7 @@ def _build_test_model(tokens: List[str]) -> UnigramModel:
 
 class TestMultilingualMergeSelection(unittest.TestCase):
     def setUp(self) -> None:
+        """Sets up common baseline vocabulary and unigram model fixtures."""
         self.base_chars = ["a", "b", "c", "d", "e", "f", "g", "h", " ", "x", "y", "z"]
         self.model = _build_test_model(self.base_chars)
 
@@ -124,11 +125,17 @@ class TestMultilingualMergeSelection(unittest.TestCase):
         # 'cd' occurs exclusively in stratum 1 with identical total count
         chunks = (
             ["ab", "ab"] * 2  # 4 total, distributed across 4 strata
-            + ["cd"] * 4       # 4 total, concentrated in stratum 1
+            + ["cd"] * 4  # 4 total, concentrated in stratum 1
         )
         strata = [
-            "s1", "s2", "s3", "s4",
-            "s1", "s1", "s1", "s1",
+            "s1",
+            "s2",
+            "s3",
+            "s4",
+            "s1",
+            "s1",
+            "s1",
+            "s1",
         ]
 
         cem_cov = CrossEntropyMerging(max_merges=1, scoring_strategy="coverage_aware", coverage_weight=2.0)
@@ -146,14 +153,16 @@ class TestMultilingualMergeSelection(unittest.TestCase):
         for strat in ["global", "balanced", "coverage_aware"]:
             super_bpe = SuperBPE(
                 max_merges=3,
+                space_char=" ",
                 scoring_strategy=strat,
                 strata_alpha=0.5,
                 coverage_weight=1.0,
             )
             opt_model = super_bpe.optimize(self.model, chunks, strata=strata)
-            # Starting vocab size was len(base_chars)
-            # Added merges should be exactly len(super_bpe.merges)
-            self.assertEqual(len(opt_model.vocab), len(self.model.vocab) + len(super_bpe.merges))
+            # Starting vocab size was len(self.model.vocab)
+            # Added merges should be exactly 3 on this repeated-chunk fixture
+            self.assertEqual(len(super_bpe.merges), 3)
+            self.assertEqual(len(opt_model.vocab), len(self.model.vocab) + 3)
             self.assertEqual(len(super_bpe.merges), len(super_bpe.merge_provenance))
 
     def test_leakage_safety_dataset_protocol(self) -> None:

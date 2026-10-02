@@ -46,6 +46,7 @@ class DocumentRecord:
 
     @property
     def stratum(self) -> str:
+        """Returns the composite stratum key formatted as domain:language."""
         return f"{self.domain}:{self.language}"
 
 
@@ -179,6 +180,14 @@ class MultilingualMergeExperiment:
         normalizer: Optional[Normalizer] = None,
         pre_tokenizer: Optional[RegexPreTokenizer] = None,
     ):
+        """Initializes the MultilingualMergeExperiment test harness.
+
+        Args:
+            target_vocab: Target vocabulary size across base training and merges.
+            merge_reserve: Number of merge operations reserved for SuperBPE.
+            normalizer: Optional custom normalizer for text preprocessing.
+            pre_tokenizer: Optional custom pre-tokenizer for regex splitting.
+        """
         if target_vocab <= merge_reserve:
             raise ValueError(f"target_vocab ({target_vocab}) must exceed merge_reserve ({merge_reserve})")
         self.target_vocab = target_vocab
@@ -272,6 +281,7 @@ class MultilingualMergeExperiment:
 
         # Load train and validation rows only
         def load_rows(split_name: str) -> List[DocumentRecord]:
+            """Loads and normalizes document records from a dataset split."""
             entry = splits[split_name]
             file_path = path.parent / entry["path"]
             records: List[DocumentRecord] = []
@@ -314,6 +324,8 @@ class MultilingualMergeExperiment:
             target_vocab_size=base_budget,
             byte_fallback=True,
             min_frequency=1,
+            normalizer=self.normalizer,
+            pre_tokenizer=self.pre_tokenizer,
             verbose=False,
         )
         return tok
@@ -374,6 +386,7 @@ class MultilingualMergeExperiment:
         tok: CustomTokenizer,
         val_records: Sequence[DocumentRecord],
         cem: Optional[CrossEntropyMerging] = None,
+        baseline_tokens_by_stratum: Optional[Dict[str, int]] = None,
     ) -> Dict[str, StratumValidationMetrics]:
         """Evaluates tokenization efficiency and merge utilization on validation strata."""
         grouped: Dict[str, List[DocumentRecord]] = defaultdict(list)
@@ -408,6 +421,12 @@ class MultilingualMergeExperiment:
             fert = total_tokens / words
             fb_pct = (fallback_count / max(total_tokens, 1)) * 100.0
 
+            if baseline_tokens_by_stratum is not None:
+                base_tokens = baseline_tokens_by_stratum.get(stratum, total_tokens)
+                tokens_saved = base_tokens - total_tokens
+            else:
+                tokens_saved = 0
+
             metrics_by_stratum[stratum] = StratumValidationMetrics(
                 stratum=stratum,
                 language=lang,
@@ -422,7 +441,7 @@ class MultilingualMergeExperiment:
                 chars_per_token=round(cpt, 3),
                 fertility=round(fert, 3),
                 merges_fired=merges_fired,
-                tokens_saved=merges_fired,  # Each binary merge saves 1 token
+                tokens_saved=tokens_saved,
                 fallback_tokens=fallback_count,
                 fallback_rate_pct=round(fb_pct, 2),
             )
@@ -442,6 +461,8 @@ class MultilingualMergeExperiment:
         4. Multilingual-Aware CEM (Coverage-Aware SuperBPE)
         """
         base_tok = self.train_base_unigram(train_records)
+        base_metrics = self.evaluate_tokenizer_on_strata(base_tok, val_records, None)
+        baseline_tokens = {st: m.token_count for st, m in base_metrics.items()}
 
         conditions: List[Tuple[str, str, Dict[str, Any]]] = [
             ("Unigram_Baseline", "none", {}),
@@ -465,6 +486,7 @@ class MultilingualMergeExperiment:
                     "herfindahl_index": 0.0,
                 }
                 merges_export: List[Dict[str, Any]] = []
+                strata_metrics = base_metrics
             else:
                 tok, cem = self.run_merge_optimization(
                     base_tok,
@@ -474,8 +496,9 @@ class MultilingualMergeExperiment:
                 )
                 dom_summary = cem.dominance_summary()
                 merges_export = [asdict(m) for m in cem.merge_provenance]
-
-            strata_metrics = self.evaluate_tokenizer_on_strata(tok, val_records, cem)
+                strata_metrics = self.evaluate_tokenizer_on_strata(
+                    tok, val_records, cem, baseline_tokens_by_stratum=baseline_tokens
+                )
 
             agg_tokens = sum(m.token_count for m in strata_metrics.values())
             agg_bytes = sum(m.raw_bytes for m in strata_metrics.values())
@@ -530,6 +553,41 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
         c_conc = coverage_res.dominance_summary.get("concentrated_merges_percent", 0.0) if coverage_res else 0.0
         max_strata = max(b_strata, c_strata)
 
+        # Identify dominant and improved tail strata dynamically from current results
+        g_alloc = global_res.dominance_summary.get("strata_allocation", {})
+        alt_alloc = alt_res.dominance_summary.get("strata_allocation", {})
+        top_global_stratum = max(g_alloc, key=lambda k: g_alloc[k]) if g_alloc else None
+        gain_stratum = None
+        max_gain = -1
+        for st, c_cnt in alt_alloc.items():
+            diff = c_cnt - g_alloc.get(st, 0)
+            if diff > max_gain:
+                max_gain = diff
+                gain_stratum = st
+
+        tradeoff_desc = (
+            "3. **Objective Trade-off (No Global Superiority Claim)**: Multilingual-aware scoring dynamically reallocates "
+            "capacity to underrepresented languages"
+        )
+        if gain_stratum and top_global_stratum:
+            gain_lang = gain_stratum.split(":", 1)[-1]
+            top_lang = top_global_stratum.split(":", 1)[-1]
+            g_top = g_alloc.get(top_global_stratum, 0)
+            alt_top = alt_alloc.get(top_global_stratum, 0)
+            g_gain = g_alloc.get(gain_stratum, 0)
+            alt_gain = alt_alloc.get(gain_stratum, 0)
+            tradeoff_desc += (
+                f" (e.g. {gain_lang} merges increasing from {g_gain} to {alt_gain}), "
+                f"while trading off merge capacity previously concentrated in the dominant stratum "
+                f"({top_lang} merges adjusting from {g_top} to {alt_top}). "
+            )
+        else:
+            tradeoff_desc += ". "
+        tradeoff_desc += (
+            "This empirically confirms that multilingual-aware scoring represents an **inductive capacity-allocation trade-off** "
+            "rather than a free lunch or strict global Pareto dominance."
+        )
+
         lines.extend(
             [
                 f"1. **Disproportionate Dominant-Stratum Concentration in Global Scoring**: Under standard frequency-driven "
@@ -537,12 +595,8 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
                 f"in a single dominant stratum, resulting in an allocation Herfindahl-Hirschman Index (HHI) of **{g_hhi:.4f}** across **{g_strata}** represented strata.",
                 f"2. **Broader Multilingual Diversity**: Stratum-balanced and coverage-aware scoring expand representation to "
                 f"**{max_strata}** language strata (with coverage-aware dropping single-stratum concentration to **{c_conc:.1f}%**), "
-                f"unlocking productive merges for tail languages (such as Swahili and Yoruba) that received 0 merges under global scoring.",
-                "3. **Objective Trade-off (No Global Superiority Claim)**: While multilingual-aware scoring significantly improves compression and "
-                "merge utility in underrepresented languages (e.g. Swahili bytes/token improving from 1.04 to 1.18 with up to 10 merges fired), "
-                "it trades off capacity previously monopolized by the dominant training language (English merges decrease from 21 to 1-3). "
-                "This empirically confirms that multilingual-aware scoring is an **inductive capacity-allocation trade-off** "
-                "rather than a free lunch or strict global Pareto dominance.",
+                f"unlocking productive merges for tail languages that received fewer or 0 merges under global scoring.",
+                tradeoff_desc,
             ]
         )
 
@@ -576,9 +630,7 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
         ]
     )
 
-    all_strata = sorted(
-        {s for cond in results.values() for s in cond.strata_metrics.keys()}
-    )
+    all_strata = sorted({s for cond in results.values() for s in cond.strata_metrics.keys()})
     for st in all_strata:
         lang = st.split(":", 1)[1] if ":" in st else st
         g_count = global_res.dominance_summary.get("strata_allocation", {}).get(st, 0) if global_res else 0
@@ -617,6 +669,18 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
         c_fired = c_m.merges_fired if c_m else 0
         lines.append(f"| | Merges Fired | {u_fired} | {g_fired} | {b_fired} | {c_fired} |")
 
+    exact_budgets = all(c.actual_vocab_size == c.target_vocab_size for c in results.values())
+    if exact_budgets:
+        budget_str = "Target vocabulary and merge counts were validated to bit-exact targets across all conditions."
+    else:
+        budget_str = (
+            "Observed vocabulary sizes and merge counts tracked target budgets within eligible candidate pair limits."
+        )
+
+    all_fallback_rates = [m.fallback_rate_pct for c in results.values() for m in c.strata_metrics.values()]
+    mean_fb = sum(all_fallback_rates) / max(len(all_fallback_rates), 1)
+    max_fb = max(all_fallback_rates) if all_fallback_rates else 0.0
+
     lines.extend(
         [
             "",
@@ -625,8 +689,8 @@ def format_markdown_report(results: Dict[str, ConditionResult]) -> str:
             "- **Zero Test-Set Access**: Only the training and validation splits were used. The held-out test split was verified present in metadata and remained strictly untouched.",
             "- **Zero Train/Validation Leakage**: All training documents and validation documents were strictly disjoint (verified 0 overlapping strings).",
             "- **No Hard-Coded Token Lists**: Scoring functions operate purely on empirical stratum statistics without language-specific token tables or manual regex filters.",
-            "- **Exact Budget Invariance**: Target vocabulary and merge counts were validated to bit-exact targets across all conditions.",
-            "- **Lossless Byte Fallback**: 0.0% out-of-vocabulary fallback rate maintained across all languages.",
+            f"- **Budget Adherence**: {budget_str}",
+            f"- **Lossless Byte Fallback**: Tokenization maintains 100% lossless coverage without unk tokens (mean byte fallback rate: {mean_fb:.1f}%, max: {max_fb:.1f}% on unrepresented scripts).",
         ]
     )
 
@@ -670,6 +734,7 @@ def export_csv_tables(
                 "chars_per_token",
                 "fertility",
                 "merges_fired",
+                "tokens_saved",
                 "fallback_pct",
             ]
         )
@@ -686,6 +751,7 @@ def export_csv_tables(
                         sm.chars_per_token,
                         sm.fertility,
                         sm.merges_fired,
+                        sm.tokens_saved,
                         sm.fallback_rate_pct,
                     ]
                 )
@@ -693,9 +759,7 @@ def export_csv_tables(
 
 def run_cli() -> None:
     """CLI entrypoint for running the multilingual merge selection experiment."""
-    parser = argparse.ArgumentParser(
-        description="Run multilingual-aware merge selection experiment (Issue #88)."
-    )
+    parser = argparse.ArgumentParser(description="Run multilingual-aware merge selection experiment (Issue #88).")
     parser.add_argument(
         "--dataset",
         type=str,
@@ -743,6 +807,7 @@ def run_cli() -> None:
 
     # Export results.json
     def serialize_cond(c: ConditionResult) -> Dict[str, Any]:
+        """Serializes a ConditionResult object to a JSON-compatible dictionary."""
         return {
             "condition_name": c.condition_name,
             "scoring_strategy": c.scoring_strategy,
