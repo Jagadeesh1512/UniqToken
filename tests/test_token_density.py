@@ -114,6 +114,15 @@ class TokenDensityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 d.validate_density_ledger(payload)
 
+    def test_missing_canonical_fields_fail_with_schema_error(self):
+        record = fixture()["records"][0]
+        for name in ("vocab_budget", "tokens", "token_length_bytes_histogram"):
+            invalid = {k: v for k, v in record.items() if k != name}
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "canonical"):
+                d.project_record(invalid)
+        with self.assertRaisesRegex(ValueError, "object"):
+            d.project_record(None)
+
     def test_retained_failure_diagnostics_project_without_retokenization(self):
         path = Path(d.__file__).parent / "failure_analysis" / "issue85" / "results.json"
         source = h.read_json(path)

@@ -22,6 +22,8 @@ def reject_ambiguous_fertility(value):
     """Reject ambiguous density keys even when nested in diagnostic records."""
     if isinstance(value, dict):
         for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError("ledger object keys must be strings")
             if "fertility" in key.lower() or key.lower() == "tokens_per_word":
                 raise ValueError("ambiguous cross-script fertility is not accepted; use tokens_per_unicode_character")
             reject_ambiguous_fertility(child)

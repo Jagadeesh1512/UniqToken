@@ -65,6 +65,9 @@ def density_metrics(tokens, normalized_utf8_bytes, unicode_characters, histogram
 
 
 def project_record(row):
+    h.require(isinstance(row, dict), "density record must be an object")
+    required = (*LABELS, *COUNTS, "token_length_bytes_histogram")
+    h.require(all(key in row for key in required), "density record is missing required canonical fields")
     reject_ambiguous_fertility(row)
     metrics = density_metrics(*(row[k] for k in COUNTS), row["token_length_bytes_histogram"])
     for key, value in metrics.items():
