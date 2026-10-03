@@ -17,6 +17,8 @@ tokenizer path or public package exports.
 
 from __future__ import annotations
 
+import heapq
+import os
 import random
 from dataclasses import dataclass, field
 from enum import Enum
@@ -30,6 +32,8 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    Union,
+    runtime_checkable,
 )
 
 from .tokenizer import CustomTokenizer, Token
@@ -156,6 +160,26 @@ class MergeConstraints:
     legality: Optional[ImmutableLegalityView] = None
 
 
+@runtime_checkable
+class MergeEngine(Protocol):
+    """Abstract generic boundary for merge-execution engines.
+
+    Both ReferenceMergeEngine (the correctness oracle) and FastMergeEngine
+    (the high-performance incremental implementation) conform to this contract.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    def apply(
+        self,
+        input: Sequence[Atom],
+        table: MergeTableView,
+        constraints: MergeConstraints,
+        decisions: Optional[DropoutDecisions] = None,
+    ) -> MergePlan: ...
+
+
 # ---------------------------------------------------------------------------
 # Concrete adapters used by the reference oracle
 # ---------------------------------------------------------------------------
@@ -276,6 +300,10 @@ class ReferenceMergeEngine:
     """
 
     SUPPORTED_PROFILES = frozenset({SemanticProfile.SUPER_BPE_PASS_V1})
+
+    @property
+    def name(self) -> str:
+        return "reference"
 
     def apply(
         self,
@@ -452,6 +480,306 @@ class ReferenceMergeEngine:
 
 
 # ---------------------------------------------------------------------------
+# Incremental FastMergeEngine
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FastNode:
+    """Internal doubly-linked node representing a live subword atom/group."""
+
+    id: int
+    piece: PieceKey
+    start: LeafIndex
+    end: LeafIndex
+    merged_id: Optional[TokenId] = None
+    prev: Optional[_FastNode] = None
+    next: Optional[_FastNode] = None
+    alive: bool = True
+    generation: int = 0
+
+
+class FastMergeEngine:
+    """High-performance incremental SuperBPE merge engine (``SuperBpePassV1``).
+
+    Implements the generic ``MergeEngine`` contract using an incremental
+    doubly-linked token list with generation tracking and priority-based
+    left-to-right pass scheduling. Avoids full-sequence re-scans and allocations
+    across merge passes.
+
+    Preserves exact SuperBpePassV1 semantics:
+    - Deterministic pass barriers: newly formed merges cannot merge again in
+      the same pass.
+    - Leftmost overlap resolution.
+    - Exact dropout draw consumption and boundary block lifetimes.
+    - Boundary constraints (hard cuts) and pure supplied legality predicates.
+    - Fails loudly on unsupported semantics rather than falling back silently.
+    """
+
+    SUPPORTED_PROFILES = frozenset({SemanticProfile.SUPER_BPE_PASS_V1})
+
+    @property
+    def name(self) -> str:
+        return "fast"
+
+    def apply(
+        self,
+        input: Sequence[Atom],
+        table: MergeTableView,
+        constraints: MergeConstraints,
+        decisions: Optional[DropoutDecisions] = None,
+    ) -> MergePlan:
+        self._validate(input, table, constraints)
+        if not input:
+            return MergePlan(groups=(), applied_merges=0, decisions_consumed=0)
+
+        initial_leaf_count = len(input)
+        if initial_leaf_count == 1:
+            atom = input[0]
+            group = Group(leaves=(0, 1), piece=atom.piece, merged_id=None)
+            return MergePlan(groups=(group,), applied_merges=0, decisions_consumed=0)
+
+        # Build doubly linked list of initial nodes
+        nodes: List[_FastNode] = [
+            _FastNode(
+                id=i,
+                piece=atom.piece,
+                start=i,
+                end=i + 1,
+                merged_id=None,
+                generation=0,
+            )
+            for i, atom in enumerate(input)
+        ]
+        for i in range(initial_leaf_count - 1):
+            nodes[i].next = nodes[i + 1]
+            nodes[i + 1].prev = nodes[i]
+
+        head: Optional[_FastNode] = nodes[0]
+        blocked: Set[Tuple[LeafIndex, LeafIndex, LeafIndex]] = set()
+        decisions_consumed = 0
+        node_id_counter = initial_leaf_count
+        generation_counter = 1
+
+        # Priority queue holds:
+        # (pass_idx, left_node.start, candidate_counter, left_node, right_node, left_gen, right_gen)
+        heap: List[Tuple[int, int, int, _FastNode, _FastNode, int, int]] = []
+        candidate_counter = 0
+
+        for i in range(initial_leaf_count - 1):
+            u = nodes[i]
+            v = nodes[i + 1]
+            rule = table.resolve(u.piece, v.piece)
+            if rule is not None:
+                candidate_counter += 1
+                heap.append((0, u.start, candidate_counter, u, v, u.generation, v.generation))
+
+        heapq.heapify(heap)
+
+        current_pass = 0
+        accepted_in_current_pass = 0
+
+        while heap:
+            cand_pass, cand_start, _, left, right, left_gen, right_gen = heapq.heappop(heap)
+
+            # Discard stale candidates
+            if not left.alive or not right.alive:
+                continue
+            if left.next is not right:
+                continue
+            if left.generation != left_gen or right.generation != right_gen:
+                continue
+
+            # Pass progression
+            if cand_pass > current_pass:
+                if accepted_in_current_pass == 0:
+                    # Pass completed without any accepted merges; no future passes possible.
+                    break
+                current_pass = cand_pass
+                accepted_in_current_pass = 0
+
+            # Evaluate eligibility: blocked, hard cuts, table rule, legality
+            boundary_key = (left.start, left.end, right.end)
+            if boundary_key in blocked:
+                continue
+            if left.end in constraints.hard_cuts:
+                continue
+            rule = table.resolve(left.piece, right.piece)
+            if rule is None:
+                continue
+            if not self._legality_allows(
+                constraints,
+                left.piece,
+                right.piece,
+                rule,
+                (left.start, right.end),
+            ):
+                continue
+
+            # Evaluate dropout
+            if decisions is not None:
+                try:
+                    drop = decisions.drop_next()
+                except DecisionError:
+                    raise
+                except Exception as exc:  # pragma: no cover - defensive
+                    raise DecisionError(str(exc)) from exc
+                decisions_consumed += 1
+                if drop:
+                    blocked.add(boundary_key)
+                    continue
+
+            # Accept merge: fuse left + right
+            new_piece = rule.result
+            if new_piece != left.piece + right.piece:
+                raise InvariantViolation(
+                    f"merge result {new_piece!r} is not concatenation of {left.piece!r} + {right.piece!r}"
+                )
+
+            merged = _FastNode(
+                id=node_id_counter,
+                piece=new_piece,
+                start=left.start,
+                end=right.end,
+                merged_id=rule.result_id,
+                prev=left.prev,
+                next=right.next,
+                alive=True,
+                generation=generation_counter,
+            )
+            node_id_counter += 1
+            generation_counter += 1
+
+            if left.prev is not None:
+                left.prev.next = merged
+            else:
+                head = merged
+
+            if right.next is not None:
+                right.next.prev = merged
+
+            left.alive = False
+            right.alive = False
+
+            # Release neighbor blocks
+            blocked.discard(boundary_key)
+            if merged.prev is not None:
+                blocked.discard((merged.prev.start, merged.prev.end, left.end))
+            if merged.next is not None:
+                blocked.discard((right.start, right.end, merged.next.end))
+
+            accepted_in_current_pass += 1
+
+            # Push candidates for the next pass
+            if merged.prev is not None:
+                cand_rule = table.resolve(merged.prev.piece, merged.piece)
+                if cand_rule is not None:
+                    candidate_counter += 1
+                    heapq.heappush(
+                        heap,
+                        (
+                            current_pass + 1,
+                            merged.prev.start,
+                            candidate_counter,
+                            merged.prev,
+                            merged,
+                            merged.prev.generation,
+                            merged.generation,
+                        ),
+                    )
+
+            if merged.next is not None:
+                cand_rule = table.resolve(merged.piece, merged.next.piece)
+                if cand_rule is not None:
+                    candidate_counter += 1
+                    heapq.heappush(
+                        heap,
+                        (
+                            current_pass + 1,
+                            merged.start,
+                            candidate_counter,
+                            merged,
+                            merged.next,
+                            merged.generation,
+                            merged.next.generation,
+                        ),
+                    )
+
+        # Reconstruct output groups
+        out_groups: List[Group] = []
+        curr = head
+        while curr is not None:
+            out_groups.append(
+                Group(
+                    leaves=(curr.start, curr.end),
+                    piece=curr.piece,
+                    merged_id=curr.merged_id,
+                )
+            )
+            curr = curr.next
+
+        groups = tuple(out_groups)
+        self._assert_partition(groups, initial_leaf_count)
+        applied = initial_leaf_count - len(groups)
+        return MergePlan(
+            groups=groups,
+            applied_merges=applied,
+            decisions_consumed=decisions_consumed,
+        )
+
+    def _validate(
+        self,
+        input: Sequence[Atom],
+        table: MergeTableView,
+        constraints: MergeConstraints,
+    ) -> None:
+        if constraints.semantic_profile not in self.SUPPORTED_PROFILES:
+            raise UnsupportedSemantics(
+                f"unsupported semantic profile {constraints.semantic_profile!r}; "
+                f"supported={sorted(p.value for p in self.SUPPORTED_PROFILES)}"
+            )
+        if constraints.vocabulary_identity is not table.vocabulary_identity:
+            raise InvalidConfiguration("constraints.vocabulary_identity does not match table.vocabulary_identity")
+        n = len(input)
+        for cut in constraints.hard_cuts:
+            if not isinstance(cut, int) or isinstance(cut, bool) or cut < 1 or cut >= n:
+                raise InvalidConfiguration(f"hard cut {cut!r} is out of range for input length {n}")
+        for atom in input:
+            if not isinstance(atom.piece, str):
+                raise InvalidConfiguration(f"Atom.piece must be a str PieceKey, got {type(atom.piece)!r}")
+
+    @staticmethod
+    def _legality_allows(
+        constraints: MergeConstraints,
+        left: PieceKey,
+        right: PieceKey,
+        rule: MergeRule,
+        leaf_range: Tuple[LeafIndex, LeafIndex],
+    ) -> bool:
+        legality = constraints.legality
+        if legality is None:
+            return True
+        return legality.allows(left, right, rule, leaf_range)
+
+    @staticmethod
+    def _assert_partition(groups: Sequence[Group], leaf_count: int) -> None:
+        if leaf_count == 0:
+            if groups:
+                raise InvariantViolation("empty input produced non-empty groups")
+            return
+        cursor = 0
+        for group in groups:
+            start, end = group.leaves
+            if start != cursor or end <= start:
+                raise InvariantViolation(
+                    f"groups do not form a contiguous partition: expected start {cursor}, got [{start}, {end})"
+                )
+            cursor = end
+        if cursor != leaf_count:
+            raise InvariantViolation(f"groups cover [0, {cursor}) but input has {leaf_count} leaves")
+
+
+# ---------------------------------------------------------------------------
 # Production adapters / projection helpers
 # ---------------------------------------------------------------------------
 
@@ -513,6 +841,73 @@ def plan_to_tokens(plan: MergePlan, leaves: Sequence[Token]) -> List[Token]:
     return out
 
 
+def get_merge_engine(name_or_instance: Union[str, MergeEngine, None] = None) -> MergeEngine:
+    """Resolve a MergeEngine instance by name or pass through an existing instance.
+
+    Supported names:
+    - "reference" (or "oracle"): ReferenceMergeEngine
+    - "fast" (or "fast_merge", "fast_merge_engine"): FastMergeEngine
+
+    If name_or_instance is None, checks the UNIQTOKEN_MERGE_ENGINE environment variable,
+    defaulting to ReferenceMergeEngine.
+    """
+    if name_or_instance is None:
+        env_name = os.environ.get("UNIQTOKEN_MERGE_ENGINE", "").strip().lower()
+        if not env_name or env_name in ("reference", "oracle"):
+            return ReferenceMergeEngine()
+        elif env_name in ("fast", "fast_merge", "fast_merge_engine"):
+            return FastMergeEngine()
+        elif env_name in ("default", "production", "none", "off"):
+            return ReferenceMergeEngine()
+        else:
+            raise InvalidConfiguration(
+                f"Unknown engine name in UNIQTOKEN_MERGE_ENGINE: {env_name!r}; expected 'reference' or 'fast'"
+            )
+
+    if isinstance(name_or_instance, str):
+        normalized = name_or_instance.strip().lower()
+        if normalized in ("reference", "oracle"):
+            return ReferenceMergeEngine()
+        elif normalized in ("fast", "fast_merge", "fast_merge_engine"):
+            return FastMergeEngine()
+        elif normalized in ("default", "production"):
+            return ReferenceMergeEngine()
+        else:
+            raise InvalidConfiguration(
+                f"Unknown merge engine name: {name_or_instance!r}; expected 'reference' or 'fast'"
+            )
+
+    if hasattr(name_or_instance, "apply") and callable(name_or_instance.apply):
+        return name_or_instance
+
+    raise InvalidConfiguration(f"Expected a str name or MergeEngine instance, got {type(name_or_instance)!r}")
+
+
+def apply_engine_to_pieces(
+    engine: MergeEngine,
+    pieces: Sequence[str],
+    table: MergeTableView,
+    constraints: MergeConstraints,
+    decisions: Optional[DropoutDecisions] = None,
+) -> Tuple[List[str], MergePlan]:
+    """Convenience: atoms -> plan -> pieces using any MergeEngine."""
+    plan = engine.apply(atoms_from_pieces(pieces), table, constraints, decisions)
+    return plan_to_pieces(plan), plan
+
+
+def apply_engine_to_tokens(
+    engine: MergeEngine,
+    tokens: Sequence[Token],
+    table: MergeTableView,
+    constraints: MergeConstraints,
+    decisions: Optional[DropoutDecisions] = None,
+) -> Tuple[List[Token], MergePlan]:
+    """Convenience: Token leaves -> plan -> Token projection using any MergeEngine."""
+    pieces = [t.text for t in tokens]
+    plan = engine.apply(atoms_from_pieces(pieces), table, constraints, decisions)
+    return plan_to_tokens(plan, tokens), plan
+
+
 def apply_reference_to_pieces(
     engine: ReferenceMergeEngine,
     pieces: Sequence[str],
@@ -521,8 +916,7 @@ def apply_reference_to_pieces(
     decisions: Optional[DropoutDecisions] = None,
 ) -> Tuple[List[str], MergePlan]:
     """Convenience: atoms -> plan -> pieces."""
-    plan = engine.apply(atoms_from_pieces(pieces), table, constraints, decisions)
-    return plan_to_pieces(plan), plan
+    return apply_engine_to_pieces(engine, pieces, table, constraints, decisions)
 
 
 def apply_reference_to_tokens(
@@ -533,9 +927,7 @@ def apply_reference_to_tokens(
     decisions: Optional[DropoutDecisions] = None,
 ) -> Tuple[List[Token], MergePlan]:
     """Convenience: Token leaves -> plan -> Token projection."""
-    pieces = [t.text for t in tokens]
-    plan = engine.apply(atoms_from_pieces(pieces), table, constraints, decisions)
-    return plan_to_tokens(plan, tokens), plan
+    return apply_engine_to_tokens(engine, tokens, table, constraints, decisions)
 
 
 def differential_against_production(
@@ -544,8 +936,9 @@ def differential_against_production(
     dropout_prob: float = 0.0,
     *,
     decision_tape: Optional[Sequence[bool]] = None,
+    engine: Optional[MergeEngine] = None,
 ) -> Dict[str, object]:
-    """Compare the reference oracle to both unmodified production helpers.
+    """Compare a MergeEngine (default ReferenceMergeEngine) to both unmodified production helpers.
 
     When ``decision_tape`` is provided, both engines consume the same Boolean
     decisions (reference via ``BooleanTapeDecisions``; production via patched
@@ -558,7 +951,8 @@ def differential_against_production(
     """
     from unittest.mock import patch
 
-    engine = ReferenceMergeEngine()
+    if engine is None:
+        engine = ReferenceMergeEngine()
     table = cross_word_membership_table(tokenizer)
     constraints = production_constraints(table)
 
@@ -583,8 +977,8 @@ def differential_against_production(
         prod_pieces = tokenizer._apply_cross_word_merges(list(pieces), dropout_prob=0.0)
         leaves = [Token(p, tokenizer.model.token_to_id.get(p, i), (i, i + 1)) for i, p in enumerate(pieces)]
         prod_tokens = tokenizer._apply_cross_word_merges_with_spans(leaves, dropout_prob=0.0)
-        ref_pieces, plan = apply_reference_to_pieces(engine, pieces, table, constraints, ref_decisions)
-        ref_tokens, _ = apply_reference_to_tokens(engine, leaves, table, constraints, None)
+        ref_pieces, plan = apply_engine_to_pieces(engine, pieces, table, constraints, ref_decisions)
+        ref_tokens, _ = apply_engine_to_tokens(engine, leaves, table, constraints, None)
     else:
         # Map True(drop)->0.0 and False(keep)->0.99 so production's
         # ``random.random() < p`` with p=0.5 matches the Boolean tape.
@@ -595,9 +989,9 @@ def differential_against_production(
         with patch("random.random", side_effect=list(draws)):
             prod_tokens = tokenizer._apply_cross_word_merges_with_spans(list(leaves), dropout_prob=dropout_prob)
         tape_a = BooleanTapeDecisions(list(decision_tape))
-        ref_pieces, plan = apply_reference_to_pieces(engine, pieces, table, constraints, tape_a)
+        ref_pieces, plan = apply_engine_to_pieces(engine, pieces, table, constraints, tape_a)
         tape_b = BooleanTapeDecisions(list(decision_tape))
-        ref_tokens, _ = apply_reference_to_tokens(engine, leaves, table, constraints, tape_b)
+        ref_tokens, _ = apply_engine_to_tokens(engine, leaves, table, constraints, tape_b)
 
     match = (
         ref_pieces == prod_pieces
@@ -612,6 +1006,41 @@ def differential_against_production(
         "reference_spans": [(t.raw_span, t.id, t.text) for t in ref_tokens],
         "decisions_consumed": plan.decisions_consumed,
         "applied_merges": plan.applied_merges,
+        "match": match,
+    }
+
+
+def differential_reference_vs_fast(
+    pieces: Sequence[str],
+    table: MergeTableView,
+    constraints: MergeConstraints,
+    decisions_factory: Optional[Callable[[], DropoutDecisions]] = None,
+) -> Dict[str, object]:
+    """Compare ReferenceMergeEngine and FastMergeEngine on exact same input."""
+    ref_engine = ReferenceMergeEngine()
+    fast_engine = FastMergeEngine()
+    atoms = atoms_from_pieces(pieces)
+
+    dec_ref = decisions_factory() if decisions_factory else None
+    dec_fast = decisions_factory() if decisions_factory else None
+
+    ref_plan = ref_engine.apply(atoms, table, constraints, dec_ref)
+    fast_plan = fast_engine.apply(atoms, table, constraints, dec_fast)
+
+    match = (
+        plan_to_pieces(ref_plan) == plan_to_pieces(fast_plan)
+        and ref_plan.applied_merges == fast_plan.applied_merges
+        and ref_plan.decisions_consumed == fast_plan.decisions_consumed
+        and [g.leaves for g in ref_plan.groups] == [g.leaves for g in fast_plan.groups]
+        and [g.merged_id for g in ref_plan.groups] == [g.merged_id for g in fast_plan.groups]
+    )
+    return {
+        "reference_pieces": plan_to_pieces(ref_plan),
+        "fast_pieces": plan_to_pieces(fast_plan),
+        "reference_applied": ref_plan.applied_merges,
+        "fast_applied": fast_plan.applied_merges,
+        "reference_decisions": ref_plan.decisions_consumed,
+        "fast_decisions": fast_plan.decisions_consumed,
         "match": match,
     }
 

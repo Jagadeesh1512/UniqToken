@@ -1,0 +1,101 @@
+[
+  {
+    "sequence_length": 64,
+    "regime": "sparse",
+    "applied_merges": 4,
+    "reference_ms": 0.193,
+    "fast_ms": 0.28,
+    "speedup": 0.69,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 64,
+    "regime": "dense",
+    "applied_merges": 32,
+    "reference_ms": 0.221,
+    "fast_ms": 0.333,
+    "speedup": 0.66,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 256,
+    "regime": "sparse",
+    "applied_merges": 26,
+    "reference_ms": 0.801,
+    "fast_ms": 1.041,
+    "speedup": 0.77,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 256,
+    "regime": "medium",
+    "applied_merges": 101,
+    "reference_ms": 0.909,
+    "fast_ms": 1.303,
+    "speedup": 0.7,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 256,
+    "regime": "hierarchical",
+    "applied_merges": 192,
+    "reference_ms": 1.038,
+    "fast_ms": 1.692,
+    "speedup": 0.61,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 1024,
+    "regime": "sparse",
+    "applied_merges": 297,
+    "reference_ms": 4.032,
+    "fast_ms": 5.78,
+    "speedup": 0.7,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 1024,
+    "regime": "medium",
+    "applied_merges": 505,
+    "reference_ms": 3.818,
+    "fast_ms": 6.328,
+    "speedup": 0.6,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 1024,
+    "regime": "dense",
+    "applied_merges": 512,
+    "reference_ms": 4.322,
+    "fast_ms": 6.435,
+    "speedup": 0.67,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 1024,
+    "regime": "hierarchical",
+    "applied_merges": 768,
+    "reference_ms": 4.589,
+    "fast_ms": 8.874,
+    "speedup": 0.52,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 4096,
+    "regime": "sparse",
+    "applied_merges": 2019,
+    "reference_ms": 16.224,
+    "fast_ms": 26.129,
+    "speedup": 0.62,
+    "parity_verified": true
+  },
+  {
+    "sequence_length": 4096,
+    "regime": "medium",
+    "applied_merges": 2048,
+    "reference_ms": 16.932,
+    "fast_ms": 29.675,
+    "speedup": 0.57,
+    "parity_verified": true
+  }
+]

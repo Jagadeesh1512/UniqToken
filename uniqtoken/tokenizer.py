@@ -9,7 +9,20 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Set, Tuple, Union, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+    overload,
+)
 
 from .bpe_model import BPEModel
 from ._native import native_function, native_text_supported
@@ -21,6 +34,9 @@ from .security_shield import SecurityShield
 from .seed_builder import SeedVocabularyBuilder
 from .streaming_decoder import StreamingDecoder
 from .unigram_trainer import UnigramModel, UnigramTrainer
+
+if TYPE_CHECKING:
+    from .merge_engine import MergeEngine
 
 # Native Rust core. Kept at module level so inner functions never re-import
 # it: a stale site-packages copy would have an incompatible class identity.
@@ -81,6 +97,7 @@ class CustomTokenizer:
         pre_tokenizer: RegexPreTokenizer,
         model: UnigramModel,
         chat_template: Optional[str] = None,
+        merge_engine: Optional[Union[str, MergeEngine]] = None,
     ):
         self.normalizer = normalizer
         self.pre_tokenizer = pre_tokenizer
@@ -94,6 +111,69 @@ class CustomTokenizer:
         #: template name (e.g. ``"chatml"``), a raw Jinja2 string, or ``None``.
         #: Used by :meth:`apply_chat_template` when no override is passed.
         self.chat_template: Optional[str] = chat_template
+
+        self._merge_table_cache: Optional[object] = None
+        self._merge_engine_arg: Optional[Union[str, MergeEngine]] = None
+        self._resolved_merge_engine: Optional[MergeEngine] = None
+        self.set_merge_engine(merge_engine)
+
+    @property
+    def merge_engine(self) -> Optional[str]:
+        """Active experimental merge engine name, or None if using default production."""
+        if self._resolved_merge_engine is not None:
+            return getattr(self._resolved_merge_engine, "name", "custom")
+        return None
+
+    def set_merge_engine(self, engine: Optional[Union[str, MergeEngine]]) -> None:
+        """Explicitly configure or disable the merge engine.
+
+        Args:
+            engine: "fast", "reference", an instance of MergeEngine, or None/"default"
+                to use the default production inlined path.
+        """
+        self._merge_engine_arg = engine
+        if engine is None:
+            env = os.environ.get("UNIQTOKEN_MERGE_ENGINE", "").strip().lower()
+            if env in ("fast", "fast_merge", "fast_merge_engine"):
+                from .merge_engine import get_merge_engine
+
+                self._resolved_merge_engine = get_merge_engine("fast")
+            elif env in ("reference", "oracle"):
+                from .merge_engine import get_merge_engine
+
+                self._resolved_merge_engine = get_merge_engine("reference")
+            else:
+                self._resolved_merge_engine = None
+        elif isinstance(engine, str):
+            norm = engine.strip().lower()
+            if norm in ("default", "production", "none", "off"):
+                self._resolved_merge_engine = None
+            elif norm in ("fast", "fast_merge", "fast_merge_engine"):
+                from .merge_engine import get_merge_engine
+
+                self._resolved_merge_engine = get_merge_engine("fast")
+            elif norm in ("reference", "oracle"):
+                from .merge_engine import get_merge_engine
+
+                self._resolved_merge_engine = get_merge_engine("reference")
+            else:
+                from .merge_engine import InvalidConfiguration
+
+                raise InvalidConfiguration(
+                    f"Unknown merge engine name: {engine!r}; expected 'fast', 'reference', or 'default'"
+                )
+        else:
+            from .merge_engine import get_merge_engine
+
+            self._resolved_merge_engine = get_merge_engine(engine)
+
+    def _get_cached_merge_table(self) -> Any:
+        self._sync_model_caches()
+        if self._merge_table_cache is None:
+            from .merge_engine import cross_word_membership_table
+
+            self._merge_table_cache = cross_word_membership_table(self)
+        return self._merge_table_cache
 
     @property
     def vocab_size(self) -> int:
@@ -132,6 +212,7 @@ class CustomTokenizer:
         if self._tokenizer_model_signature != signature:
             self._cross_word_set = None
             self._specials_pipe_form = None
+            self._merge_table_cache = None
             self.security.special_tokens = set(self.model.special_tokens)
             self._tokenizer_model_signature = signature
 
@@ -249,6 +330,24 @@ class CustomTokenizer:
         a neighbour), so the drawn segmentation cannot depend on unrelated
         merges elsewhere in the sequence.
         """
+        if self._resolved_merge_engine is not None:
+            cross = self._cross_word_tokens()
+            if not cross or not tokens:
+                return tokens
+            table = self._get_cached_merge_table()
+            if not table.eligible:
+                return tokens
+            from .merge_engine import (
+                PythonRandomDecisions,
+                apply_engine_to_pieces,
+                production_constraints,
+            )
+
+            constraints = production_constraints(table)
+            decisions = PythonRandomDecisions(dropout_prob) if dropout_prob > 0.0 else None
+            pieces, _ = apply_engine_to_pieces(self._resolved_merge_engine, tokens, table, constraints, decisions)
+            return pieces
+
         cross = self._cross_word_tokens()
         if not cross:
             return tokens
@@ -295,6 +394,24 @@ class CustomTokenizer:
         boundaries dropped by ``dropout_prob > 0`` stay blocked for the rest
         of the call exactly as in :meth:`_apply_cross_word_merges`.
         """
+        if self._resolved_merge_engine is not None:
+            cross = self._cross_word_tokens()
+            if not cross or not tokens:
+                return tokens
+            table = self._get_cached_merge_table()
+            if not table.eligible:
+                return tokens
+            from .merge_engine import (
+                PythonRandomDecisions,
+                apply_engine_to_tokens,
+                production_constraints,
+            )
+
+            constraints = production_constraints(table)
+            decisions = PythonRandomDecisions(dropout_prob) if dropout_prob > 0.0 else None
+            tokens_out, _ = apply_engine_to_tokens(self._resolved_merge_engine, tokens, table, constraints, decisions)
+            return tokens_out
+
         cross = self._cross_word_tokens()
         if not cross:
             return tokens
@@ -1192,6 +1309,8 @@ class CustomTokenizer:
 
         if self.chat_template is not None:
             config["chat_template"] = self.chat_template
+        if self._merge_engine_arg is not None and isinstance(self._merge_engine_arg, str):
+            config["merge_engine"] = self._merge_engine_arg
 
         with open(dir_path / "tokenizer.json", "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -1280,7 +1399,13 @@ class CustomTokenizer:
             preset=pre_tokenizer_config.get("preset"),
         )
 
-        tokenizer = cls(normalizer=normalizer, pre_tokenizer=pre_tokenizer, model=model)
+        merge_engine = config.get("merge_engine", None)
+        tokenizer = cls(
+            normalizer=normalizer,
+            pre_tokenizer=pre_tokenizer,
+            model=model,
+            merge_engine=merge_engine,
+        )
         tokenizer.chat_template = config.get("chat_template", None)
         return tokenizer
 
