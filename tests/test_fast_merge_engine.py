@@ -108,11 +108,17 @@ class FastMergeEngineProtocolTests(unittest.TestCase):
     def test_get_merge_engine_resolver(self):
         ref = get_merge_engine("reference")
         self.assertIsInstance(ref, ReferenceMergeEngine)
+        assert ref is not None
         self.assertEqual(ref.name, "reference")
 
         fast = get_merge_engine("fast")
         self.assertIsInstance(fast, FastMergeEngine)
+        assert fast is not None
         self.assertEqual(fast.name, "fast")
+
+        # Disable aliases return None
+        for alias in ("default", "production", "none", "off"):
+            self.assertIsNone(get_merge_engine(alias))
 
         # Passthrough
         self.assertIs(get_merge_engine(fast), fast)
@@ -336,6 +342,16 @@ class FastMergeEngineErrorTests(unittest.TestCase):
 class FastMergeEngineRandomizedParityTests(unittest.TestCase):
     """Reproducible randomized and adversarial differential tests."""
 
+    def setUp(self):
+        super().setUp()
+        self._env_patcher = patch.dict(os.environ, {}, clear=False)
+        self._env_patcher.start()
+        os.environ.pop("UNIQTOKEN_MERGE_ENGINE", None)
+
+    def tearDown(self):
+        self._env_patcher.stop()
+        super().tearDown()
+
     def test_seeded_random_tables_match_reference_and_production(self):
         rng = random.Random(2026)
         engine = FastMergeEngine()
@@ -403,6 +419,16 @@ class FastMergeEngineRandomizedParityTests(unittest.TestCase):
 
 class CustomTokenizerIntegrationTests(unittest.TestCase):
     """Verification of CustomTokenizer integration and engine selection."""
+
+    def setUp(self):
+        super().setUp()
+        self._env_patcher = patch.dict(os.environ, {}, clear=False)
+        self._env_patcher.start()
+        os.environ.pop("UNIQTOKEN_MERGE_ENGINE", None)
+
+    def tearDown(self):
+        self._env_patcher.stop()
+        super().tearDown()
 
     def test_default_engine_selection_unchanged(self):
         tok = _tokenizer([A, B], [A + B])
@@ -494,16 +520,45 @@ class CustomTokenizerIntegrationTests(unittest.TestCase):
     def test_serialization_round_trip(self):
         tok_fast = _tokenizer([A, B], [A + B], merge_engine="fast")
         with tempfile.TemporaryDirectory() as tmpdir:
+            # JSON format
             tok_fast.save(tmpdir, save_binary=False)
             loaded = CustomTokenizer.load(tmpdir, prefer_binary=False)
             self.assertEqual(loaded.merge_engine, "fast")
             self.assertEqual(loaded._apply_cross_word_merges([A, B]), [A + B])
+
+            # Binary format (.uniqtok)
+            tok_fast.save(tmpdir, save_binary=True)
+            loaded_bin = CustomTokenizer.load(tmpdir, prefer_binary=True)
+            self.assertEqual(loaded_bin.merge_engine, "fast")
+            self.assertEqual(loaded_bin._apply_cross_word_merges([A, B]), [A + B])
 
         tok_default = _tokenizer([A, B], [A + B])
         with tempfile.TemporaryDirectory() as tmpdir:
             tok_default.save(tmpdir, save_binary=False)
             loaded_default = CustomTokenizer.load(tmpdir, prefer_binary=False)
             self.assertIsNone(loaded_default.merge_engine)
+
+            tok_default.save(tmpdir, save_binary=True)
+            loaded_default_bin = CustomTokenizer.load(tmpdir, prefer_binary=True)
+            self.assertIsNone(loaded_default_bin.merge_engine)
+
+    def test_custom_engine_instance_warning_on_save(self):
+        fast_inst = FastMergeEngine()
+        tok = _tokenizer([A, B], [A + B], merge_engine=fast_inst)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertWarns(UserWarning):
+                tok.save(tmpdir, save_binary=False)
+
+    def test_explicit_load_merge_engine_override(self):
+        tok_fast = _tokenizer([A, B], [A + B], merge_engine="fast")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tok_fast.save(tmpdir, save_binary=True)
+            # Override with reference engine
+            loaded_ref = CustomTokenizer.load(tmpdir, prefer_binary=True, merge_engine="reference")
+            self.assertEqual(loaded_ref.merge_engine, "reference")
+            # Override with default inlined
+            loaded_def = CustomTokenizer.load(tmpdir, prefer_binary=True, merge_engine="default")
+            self.assertIsNone(loaded_def.merge_engine)
 
 
 if __name__ == "__main__":

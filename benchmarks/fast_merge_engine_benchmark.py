@@ -1,13 +1,15 @@
 """Controlled benchmark comparison between ReferenceMergeEngine, FastMergeEngine, and Production (#115).
 
 Measures runtime, throughput, and verifies zero-mismatch differential parity
-across diverse sequence lengths and merge densities.
+across diverse sequence lengths and merge densities with warm-up and statistical spread.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import random
+import statistics
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -19,7 +21,7 @@ from uniqtoken.merge_engine import (
     ReferenceMergeEngine,
     SemanticProfile,
     apply_engine_to_pieces,
-    atoms_from_pieces,
+    cross_word_membership_table,
 )
 from uniqtoken.pre_tokenizer import Normalizer, RegexPreTokenizer
 from uniqtoken.tokenizer import CustomTokenizer
@@ -42,7 +44,7 @@ def build_synthetic_benchmark_fixture(
         atom = rng.choice(vocab_atoms)
         pieces.append(atom if (i % 2 == 0) else S + atom)
 
-    # Construct merge table according to regime
+    # Construct candidate results according to regime
     results: List[str] = []
     if regime == "sparse":
         # Only ~5% of adjacent pairs can merge
@@ -67,12 +69,6 @@ def build_synthetic_benchmark_fixture(
     unique_results = sorted(set(results))
     all_vocab = sorted(set(pieces + unique_results))
     token_to_id = {tok: idx for idx, tok in enumerate(all_vocab)}
-    eligible = {r: token_to_id[r] for r in unique_results if S in r[1:] and r.strip(S)}
-
-    table = MembershipMergeTable(
-        eligible=eligible,
-        vocabulary_identity=frozenset(eligible.items()),
-    )
 
     model = UnigramModel(
         vocab={tok: -1.0 for tok in all_vocab},
@@ -82,11 +78,15 @@ def build_synthetic_benchmark_fixture(
         max_subword_len=64,
         byte_fallback=False,
     )
+    # Build baseline tokenizer with merge_engine="default" to isolate production
     tok = CustomTokenizer(
         Normalizer(normalize_unicode=False),
         RegexPreTokenizer(),
         model,
+        merge_engine="default",
     )
+    # Build table directly from tokenizer's own cross-word definition to guarantee consistency
+    table = cross_word_membership_table(tok)
     return pieces, table, tok
 
 
@@ -110,11 +110,12 @@ def run_benchmark() -> List[Dict[str, Any]]:
 
     records: List[Dict[str, Any]] = []
 
-    print("=" * 88)
+    print("=" * 105)
     print(
-        f"{'Length':<8} | {'Regime':<14} | {'Merges':<8} | {'Ref (ms)':<10} | {'Fast (ms)':<10} | {'Speedup':<8} | {'Parity'}"
+        f"{'Length':<8} | {'Regime':<13} | {'Merges':<7} | {'Iters':<6} | "
+        f"{'Ref Mean (ms)':<14} | {'Fast Mean (ms)':<15} | {'Speedup':<8} | {'Parity'}"
     )
-    print("-" * 88)
+    print("-" * 105)
 
     for seq_len, regime in test_configs:
         pieces, table, tok = build_synthetic_benchmark_fixture(seq_len, regime)
@@ -125,51 +126,79 @@ def run_benchmark() -> List[Dict[str, Any]]:
             legality=None,
         )
 
-        # Warmup and Parity Check
+        # 1. Warm-up and Full Parity Verification (Oracle vs Fast vs Inlined Production vs Tokenizer Integration)
         ref_out, ref_plan = apply_engine_to_pieces(ref_engine, pieces, table, constraints, None)
         fast_out, fast_plan = apply_engine_to_pieces(fast_engine, pieces, table, constraints, None)
         prod_out = tok._apply_cross_word_merges(list(pieces), 0.0)
 
-        parity = ref_out == fast_out == prod_out and ref_plan.applied_merges == fast_plan.applied_merges
+        # Validate tokenizer integration path with merge_engine="fast"
+        tok.set_merge_engine("fast")
+        tok_fast_out = tok._apply_cross_word_merges(list(pieces), 0.0)
+        tok.set_merge_engine("default")
+
+        parity = ref_out == fast_out == prod_out == tok_fast_out and ref_plan.applied_merges == fast_plan.applied_merges
         if not parity:
             raise RuntimeError(f"Parity mismatch on {seq_len}, {regime}")
 
-        # Benchmark iterations
-        iters = 50 if seq_len <= 1024 else 15
+        # Iteration budget based on sequence length
+        iters = 100 if seq_len <= 256 else (50 if seq_len <= 1024 else 25)
+        warmup_iters = 5
 
-        # Benchmark Reference
-        t0 = time.perf_counter()
-        for _ in range(iters):
+        # Warm-up phase
+        for _ in range(warmup_iters):
             apply_engine_to_pieces(ref_engine, pieces, table, constraints, None)
-        ref_time_ms = ((time.perf_counter() - t0) / iters) * 1000.0
-
-        # Benchmark Fast
-        t0 = time.perf_counter()
-        for _ in range(iters):
             apply_engine_to_pieces(fast_engine, pieces, table, constraints, None)
-        fast_time_ms = ((time.perf_counter() - t0) / iters) * 1000.0
 
-        speedup = ref_time_ms / max(fast_time_ms, 1e-6)
+        # Benchmark Reference Engine
+        ref_times: List[float] = []
+        for _ in range(iters):
+            t0 = time.perf_counter()
+            apply_engine_to_pieces(ref_engine, pieces, table, constraints, None)
+            ref_times.append((time.perf_counter() - t0) * 1000.0)
 
-        records.append(
-            {
-                "sequence_length": seq_len,
-                "regime": regime,
-                "applied_merges": ref_plan.applied_merges,
-                "reference_ms": round(ref_time_ms, 3),
-                "fast_ms": round(fast_time_ms, 3),
-                "speedup": round(speedup, 2),
-                "parity_verified": parity,
-            }
-        )
+        # Benchmark Fast Engine
+        fast_times: List[float] = []
+        for _ in range(iters):
+            t0 = time.perf_counter()
+            apply_engine_to_pieces(fast_engine, pieces, table, constraints, None)
+            fast_times.append((time.perf_counter() - t0) * 1000.0)
+
+        ref_mean = statistics.mean(ref_times)
+        fast_mean = statistics.mean(fast_times)
+        ref_min = min(ref_times)
+        fast_min = min(fast_times)
+        ref_max = max(ref_times)
+        fast_max = max(fast_times)
+        ref_std = statistics.stdev(ref_times) if len(ref_times) > 1 else 0.0
+        fast_std = statistics.stdev(fast_times) if len(fast_times) > 1 else 0.0
+
+        speedup = ref_mean / max(fast_mean, 1e-6)
+
+        record = {
+            "sequence_length": seq_len,
+            "regime": regime,
+            "applied_merges": ref_plan.applied_merges,
+            "iterations": iters,
+            "reference_ms": round(ref_mean, 3),
+            "fast_ms": round(fast_mean, 3),
+            "reference_min_ms": round(ref_min, 3),
+            "fast_min_ms": round(fast_min, 3),
+            "reference_max_ms": round(ref_max, 3),
+            "fast_max_ms": round(fast_max, 3),
+            "reference_std_ms": round(ref_std, 3),
+            "fast_std_ms": round(fast_std, 3),
+            "speedup": round(speedup, 2),
+            "parity_verified": parity,
+        }
+        records.append(record)
 
         print(
-            f"{seq_len:<8} | {regime:<14} | {ref_plan.applied_merges:<8} | "
-            f"{ref_time_ms:<10.3f} | {fast_time_ms:<10.3f} | {speedup:<7.2f}x | "
+            f"{seq_len:<8} | {regime:<13} | {ref_plan.applied_merges:<7} | {iters:<6} | "
+            f"{ref_mean:<14.3f} | {fast_mean:<15.3f} | {speedup:<7.2f}x | "
             f"{'PASS' if parity else 'FAIL'}"
         )
 
-    print("=" * 88)
+    print("=" * 105)
     return records
 
 
