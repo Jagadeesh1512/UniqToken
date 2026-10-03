@@ -80,7 +80,8 @@ def recovery_candidates(model, chunks, fallback_weight=0.0):
     This is a fixed-candidate admission stage before ordinary SuperBPE.
     """
     h.require(math.isfinite(fallback_weight) and fallback_weight >= 0, "invalid fallback weight")
-    counts, total = Counter(), 0
+    counts: Counter[str] = Counter()
+    total = 0
     for chunk in chunks:
         tokens = model.encode(chunk)
         total += len(tokens)
@@ -141,7 +142,8 @@ def recover_characters(model, chunks, limit, fallback_weight=0.0):
 
 def evaluate_stratum(tok, texts):
     total_tokens, fallback, total_bytes = 0, 0, 0
-    spans, emissions = [], Counter()
+    spans = []
+    emissions: Counter[str] = Counter()
     for text in texts:
         tokens = tok.encode(text)
         h.require(tok.decode_tokens(tokens) == text, "normalized roundtrip failure")
@@ -164,7 +166,8 @@ def evaluate_stratum(tok, texts):
 
 def select_records(rows, texts, count, characters):
     h.require(count > 0 and characters > 0, "positive sample limits required")
-    seen, chosen = Counter(), []
+    seen: Counter[str] = Counter()
+    chosen = []
     for row, text in zip(rows, texts):
         key = row["domain"] + ":" + row["language"]
         if seen[key] < count:
@@ -294,7 +297,8 @@ def run_benchmark(
             seconds = time.perf_counter() - started
             directory = output / f"{budget}-{condition}"
             tok.save(directory, save_binary=False)
-            metrics, observed = {}, Counter()
+            metrics = {}
+            observed: Counter[str] = Counter()
             for stratum, texts in sorted(val.items()):
                 metrics[stratum], counts = evaluate_stratum(tok, texts)
                 observed.update(counts)
