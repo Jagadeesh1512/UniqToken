@@ -185,12 +185,15 @@ impl RustPrefixTrie {
 }
 
 impl RustPrefixTrie {
-    pub(crate) fn common_prefix_search_chars(
-        &self,
+    #[inline(always)]
+    pub(crate) fn for_each_prefix_chars<'a, F>(
+        &'a self,
         chars: &[char],
         start: usize,
-    ) -> Vec<(String, Option<u32>, f64, usize)> {
-        let mut results = Vec::with_capacity(8);
+        mut f: F,
+    ) where
+        F: FnMut(&'a str, Option<u32>, f64, usize),
+    {
         let mut current = &self.root;
         let max_len = self.max_subword_len.unwrap_or(usize::MAX);
         for (offset, ch) in chars[start..].iter().enumerate() {
@@ -203,10 +206,50 @@ impl RustPrefixTrie {
             current = next;
             if current.is_terminal {
                 if let Some(token) = &current.token {
-                    results.push((token.clone(), current.token_id, current.log_p, offset + 1));
+                    f(token.as_str(), current.token_id, current.log_p, offset + 1);
                 }
             }
         }
+    }
+
+    #[inline(always)]
+    pub(crate) fn for_each_prefix_ascii<'a, F>(
+        &'a self,
+        bytes: &[u8],
+        start: usize,
+        mut f: F,
+    ) where
+        F: FnMut(&'a str, Option<u32>, f64, usize),
+    {
+        let mut current = &self.root;
+        let max_len = self.max_subword_len.unwrap_or(usize::MAX);
+        for (offset, &b) in bytes[start..].iter().enumerate() {
+            if offset >= max_len {
+                break;
+            }
+            // SAFETY: caller guarantees ASCII; `b as char` is identity for < 0x80.
+            let ch = b as char;
+            let Some(next) = current.children.get(&ch) else {
+                break;
+            };
+            current = next;
+            if current.is_terminal {
+                if let Some(token) = &current.token {
+                    f(token.as_str(), current.token_id, current.log_p, offset + 1);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn common_prefix_search_chars(
+        &self,
+        chars: &[char],
+        start: usize,
+    ) -> Vec<(String, Option<u32>, f64, usize)> {
+        let mut results = Vec::with_capacity(8);
+        self.for_each_prefix_chars(chars, start, |token, token_id, log_p, len| {
+            results.push((token.to_string(), token_id, log_p, len));
+        });
         results
     }
 
@@ -228,24 +271,9 @@ impl RustPrefixTrie {
         start: usize,
     ) -> Vec<(String, Option<u32>, f64, usize)> {
         let mut results = Vec::with_capacity(8);
-        let mut current = &self.root;
-        let max_len = self.max_subword_len.unwrap_or(usize::MAX);
-        for (offset, &b) in bytes[start..].iter().enumerate() {
-            if offset >= max_len {
-                break;
-            }
-            // SAFETY: caller guarantees ASCII; `b as char` is identity for < 0x80.
-            let ch = b as char;
-            let Some(next) = current.children.get(&ch) else {
-                break;
-            };
-            current = next;
-            if current.is_terminal {
-                if let Some(token) = &current.token {
-                    results.push((token.clone(), current.token_id, current.log_p, offset + 1));
-                }
-            }
-        }
+        self.for_each_prefix_ascii(bytes, start, |token, token_id, log_p, len| {
+            results.push((token.to_string(), token_id, log_p, len));
+        });
         results
     }
 

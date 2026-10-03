@@ -18,8 +18,6 @@ use pyo3::types::{PyBytes, PyList, PySequence, PyString, PyTuple};
 use rayon::prelude::*;
 use regex::Regex;
 #[cfg(feature = "python")]
-use std::collections::HashSet;
-#[cfg(feature = "python")]
 use std::time::Instant;
 use std::sync::OnceLock;
 #[cfg(feature = "python")]
@@ -257,11 +255,14 @@ fn snap_spans_to_graphemes(text: &str, spans: &[(usize, usize)]) -> Vec<(usize, 
     if !snap_needs_full_pass(text, spans) {
         return merge_overlapping_spans(spans);
     }
-    let mut boundaries: HashSet<usize> = HashSet::with_capacity(text.len() / 4 + 2);
+    let mut boundaries: Vec<usize> = Vec::with_capacity(text.len() / 4 + 2);
     for (idx, _) in text.grapheme_indices(true) {
-        boundaries.insert(idx);
+        boundaries.push(idx);
     }
-    boundaries.insert(text.len());
+    boundaries.push(text.len());
+    let is_boundary = |pos: usize| -> bool {
+        boundaries.binary_search(&pos).is_ok()
+    };
     let advance = |off: usize| -> usize {
         text[off..].chars().next().map_or(1, |c| c.len_utf8())
     };
@@ -269,19 +270,19 @@ fn snap_spans_to_graphemes(text: &str, spans: &[(usize, usize)]) -> Vec<(usize, 
     let mut i = 0;
     while i < spans.len() {
         let (s, mut e) = spans[i];
-        if !boundaries.contains(&s) {
+        if !is_boundary(s) {
             if let Some(last) = out.last_mut() {
                 if e > last.1 {
                     last.1 = e;
                 }
-                while !boundaries.contains(&last.1) && last.1 < text.len() {
+                while !is_boundary(last.1) && last.1 < text.len() {
                     last.1 += advance(last.1);
                 }
                 while i + 1 < spans.len() && spans[i + 1].0 < last.1 {
                     i += 1;
                     if spans[i].1 > last.1 {
                         last.1 = spans[i].1;
-                        while !boundaries.contains(&last.1) && last.1 < text.len() {
+                        while !is_boundary(last.1) && last.1 < text.len() {
                             last.1 += advance(last.1);
                         }
                     }
@@ -290,14 +291,14 @@ fn snap_spans_to_graphemes(text: &str, spans: &[(usize, usize)]) -> Vec<(usize, 
                 continue;
             }
         }
-        while !boundaries.contains(&e) && e < text.len() {
+        while !is_boundary(e) && e < text.len() {
             e += advance(e);
         }
         while i + 1 < spans.len() && spans[i + 1].0 < e {
             i += 1;
             if spans[i].1 > e {
                 e = spans[i].1;
-                while !boundaries.contains(&e) && e < text.len() {
+                while !is_boundary(e) && e < text.len() {
                     e += advance(e);
                 }
             }
@@ -307,7 +308,7 @@ fn snap_spans_to_graphemes(text: &str, spans: &[(usize, usize)]) -> Vec<(usize, 
             if let Some(first) = text[s..e].chars().next() {
                 if is_combining_mark(first) && i + 1 < spans.len() {
                     e = spans[i + 1].1;
-                    while !boundaries.contains(&e) && e < text.len() {
+                    while !is_boundary(e) && e < text.len() {
                         e += advance(e);
                     }
                     // Consume any further spans overlapped by the fusion.
@@ -316,7 +317,7 @@ fn snap_spans_to_graphemes(text: &str, spans: &[(usize, usize)]) -> Vec<(usize, 
                         j += 1;
                         if spans[j].1 > e {
                             e = spans[j].1;
-                            while !boundaries.contains(&e) && e < text.len() {
+                            while !is_boundary(e) && e < text.len() {
                                 e += advance(e);
                             }
                         }
@@ -334,9 +335,14 @@ fn snap_spans_to_graphemes(text: &str, spans: &[(usize, usize)]) -> Vec<(usize, 
 }
 
 #[cfg(feature = "python")]
-pub(crate) fn snapped_pretokens(text: &str, re: &Regex) -> Vec<String> {
+pub(crate) fn snapped_pretoken_spans(text: &str, re: &Regex) -> Vec<(usize, usize)> {
     let spans: Vec<(usize, usize)> = re.find_iter(text).map(|m| (m.start(), m.end())).collect();
     snap_spans_to_graphemes(text, &spans)
+}
+
+#[cfg(feature = "python")]
+pub(crate) fn snapped_pretokens(text: &str, re: &Regex) -> Vec<String> {
+    snapped_pretoken_spans(text, re)
         .into_iter()
         .map(|(s, e)| text[s..e].to_string())
         .collect()
@@ -363,6 +369,17 @@ fn is_python_unicode_space(ch: char) -> bool {
 /// pre-tokenizer's `\s` handling to keep Rust/Python parity on tabs/newlines.
 #[cfg(feature = "python")]
 pub fn normalize_string_native(text: &str, space_char: char) -> String {
+    if text.is_ascii() {
+        let mut normalized = String::with_capacity(text.len() + 8);
+        for b in text.bytes() {
+            if b == b' ' {
+                normalized.push(space_char);
+            } else {
+                normalized.push(b as char);
+            }
+        }
+        return normalized;
+    }
     let mut normalized = String::with_capacity(text.len() + 8);
     let nfkc: String = text.nfkc().collect();
     for ch in nfkc.chars() {
@@ -381,6 +398,15 @@ pub fn pre_tokenize_native(text: &str, space_char: char) -> Vec<String> {
     let normalized = normalize_string_native(text, space_char);
     let re = get_pretok_regex();
     snapped_pretokens(&normalized, re)
+}
+
+/// Normalizes and returns pre-tokenized (normalized_string, spans) without intermediate chunk allocations.
+#[cfg(feature = "python")]
+pub fn pre_tokenize_native_spans(text: &str, space_char: char) -> (String, Vec<(usize, usize)>) {
+    let normalized = normalize_string_native(text, space_char);
+    let re = get_pretok_regex();
+    let spans = snapped_pretoken_spans(&normalized, re);
+    (normalized, spans)
 }
 
 /// Native end-to-end pipeline: raw texts -> normalize -> regex pre-tokenize -> Viterbi DAG -> token IDs.
@@ -404,11 +430,13 @@ pub fn rust_encode_text_batch<'py>(
             .par_iter()
             .enumerate()
             .map(|(idx, raw_text)| {
-                let chunks = pre_tokenize_native(raw_text.as_ref(), space_char);
-                let mut sentence_ids: Vec<u32> = Vec::with_capacity(chunks.len() * 2);
+                let (normalized, spans) = pre_tokenize_native_spans(raw_text.as_ref(), space_char);
+                let cap = (spans.len() * 2).clamp(8, 4096);
+                let mut sentence_ids: Vec<u32> = Vec::with_capacity(cap);
 
-                for chunk in chunks {
-                    match decode_cached(&chunk, trie, byte_fallback) {
+                for &(s, e) in &spans {
+                    let chunk = &normalized[s..e];
+                    match decode_cached(chunk, trie, byte_fallback) {
                         Ok(seg) => {
                             for (token, token_id, ..) in seg.iter() {
                                 let id = token_id.ok_or_else(|| {
@@ -453,10 +481,20 @@ fn native_security_gate(text: &str) -> CoreResult<()> {
     if text.contains('\u{E000}') || text.contains('\u{E001}') {
         return core_error("text contains private-use metaspace escape characters; use the Python pipeline");
     }
+    if text.is_ascii() {
+        if text.contains("<|") {
+            return core_error("text contains control-token syntax after NFKC; use the Python pipeline");
+        }
+        return Ok(());
+    }
     // NFKC can synthesize '<' or '|' from fullwidth/compatibility chars
     // (e.g. '＜' U+FF1C -> '<', '｜' U+FF5C -> '|'), so the check must run
-    // on the canonical form. NFKC is idempotent; the second pass inside
-    // rust_normalize is negligible.
+    // on the canonical form.
+    // In Unicode, only '<' (U+003C), '﹤' (U+FE64), and '＜' (U+FF1C) can produce '<' under NFKC.
+    // If text does not contain any of them, canonical cannot contain '<|'.
+    if !text.contains('<') && !text.contains('\u{FE64}') && !text.contains('\u{FF1C}') {
+        return Ok(());
+    }
     let canonical: String = text.nfkc().collect();
     if canonical.contains("<|") {
         return core_error("text contains control-token syntax after NFKC; use the Python pipeline");
@@ -490,9 +528,12 @@ fn encode_text_native_inner(
         strip_whitespace,
     )?;
     let re = get_full_pretok_regex();
-    let mut tokens: Vec<String> = Vec::new();
-    for chunk in snapped_pretokens(&normalized, re) {
-        let seg = decode_cached(chunk.as_str(), trie, byte_fallback).map_err(CoreError)?;
+    let spans = snapped_pretoken_spans(&normalized, re);
+    let cap = (spans.len() * 2).clamp(8, 4096);
+    let mut tokens: Vec<String> = Vec::with_capacity(cap);
+    for &(s, e) in &spans {
+        let chunk = &normalized[s..e];
+        let seg = decode_cached(chunk, trie, byte_fallback).map_err(CoreError)?;
         tokens.extend(seg.iter().map(|(token, ..)| token.clone()));
     }
     Ok(tokens)
@@ -621,9 +662,12 @@ fn encode_text_native_ids_inner(
         strip_whitespace,
     )?;
     let re = get_full_pretok_regex();
-    let mut ids: Vec<u32> = Vec::new();
-    for chunk in snapped_pretokens(&normalized, re) {
-        let seg = decode_cached(chunk.as_str(), trie, byte_fallback).map_err(CoreError)?;
+    let spans = snapped_pretoken_spans(&normalized, re);
+    let cap = (spans.len() * 2).clamp(8, 4096);
+    let mut ids: Vec<u32> = Vec::with_capacity(cap);
+    for &(s, e) in &spans {
+        let chunk = &normalized[s..e];
+        let seg = decode_cached(chunk, trie, byte_fallback).map_err(CoreError)?;
         for (token, token_id, ..) in seg.iter() {
             let id = token_id.ok_or_else(|| {
                 CoreError(format!("rust_encode_text_native_ids: decoded token {:?} has no integer ID", token))
@@ -763,8 +807,9 @@ fn profile_text_native(
     let chunks: Vec<String> = spans.into_iter()
         .map(|(s, e)| normalized[s..e].to_string()).collect();
     ns[3] = start.elapsed().as_nanos() as u64;
-    let mut tokens = Vec::new();
-    let mut ids = Vec::new();
+    let cap = (chunks.len() * 2).clamp(8, 4096);
+    let mut tokens = Vec::with_capacity(cap);
+    let mut ids = Vec::with_capacity(cap);
     for chunk in chunks {
         let start = Instant::now();
         let seg = decode_cached(&chunk, trie, byte_fallback).map_err(CoreError)?;
@@ -869,5 +914,85 @@ mod tests {
         let fam = "👨‍👩";
         let fam_spans = vec![(0, 4), (4, 7), (7, 11)];
         assert_eq!(snap_spans_to_graphemes(fam, &fam_spans), vec![(0, 11)]);
+    }
+
+    #[test]
+    fn snapped_pretoken_spans_matches_snapped_pretokens() {
+        let text = "Hello world! 123 café 👨‍👩 and क् conjunct.";
+        let re = get_full_pretok_regex();
+        let spans = snapped_pretoken_spans(text, re);
+        let tokens = snapped_pretokens(text, re);
+        assert_eq!(spans.len(), tokens.len());
+        for (&(s, e), tok) in spans.iter().zip(tokens.iter()) {
+            assert_eq!(&text[s..e], tok);
+        }
+    }
+
+    #[test]
+    #[ignore = "long-running benchmark intended for release profile"]
+    fn perf_bench_pipeline_throughput() {
+        use std::time::Instant;
+        let mut trie = RustPrefixTrie::new(None);
+        let subwords = [
+            "the", "be", "to", "of", "and", "a", "in", "that", "have", "I",
+            "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
+            "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
+            "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
+            "function", "return", "const", "let", "var", "import", "export", "class",
+            "def", "self", "async", "await", "print", "None", "True", "False",
+            "Hello", "world", "UniqToken", "tokenizer", "fast", "engine", "allocation",
+            " ", "  ", "   ", "    ", "\n", "\t", "!", "?", ".", ",", ":", ";",
+            "123", "result", "tokens", "push", "length",
+        ];
+        for (i, word) in subwords.iter().enumerate() {
+            trie.insert(word, -1.0 - (i as f64 * 0.02), Some(i as u32)).unwrap();
+        }
+        trie.insert("\u{2581}", -0.5, Some(500)).unwrap();
+        for b in 0..=255_u8 {
+            let tok = crate::viterbi::BYTE_FALLBACK_TOKENS[b as usize];
+            trie.insert(tok, -10.0, Some(1000 + b as u32)).unwrap();
+        }
+
+        let text = "function benchmark_viterbi_fast_path(input_tokens, max_subwords) {\n    const result = [];\n    for (let i = 0; i < input_tokens.length; i++) {\n        result.push(input_tokens[i]);\n    }\n    return result;\n}\n";
+        let bytes_len = text.len();
+
+        // Warmup
+        for _ in 0..100 {
+            let _ = encode_text_native_inner(text, &trie, true, '\u{2581}', true, true, false, false, false, false).unwrap();
+            let _ = encode_text_native_ids_inner(text, &trie, true, '\u{2581}', true, true, false, false, false, false).unwrap();
+        }
+
+        let iterations = if cfg!(debug_assertions) { 1_000 } else { 10_000 };
+        let start_tokens = Instant::now();
+        for _ in 0..iterations {
+            let _ = encode_text_native_inner(text, &trie, true, '\u{2581}', true, true, false, false, false, false).unwrap();
+        }
+        let elapsed_tokens = start_tokens.elapsed();
+
+        let start_ids = Instant::now();
+        for _ in 0..iterations {
+            let _ = encode_text_native_ids_inner(text, &trie, true, '\u{2581}', true, true, false, false, false, false).unwrap();
+        }
+        let elapsed_ids = start_ids.elapsed();
+
+        let total_bytes = (bytes_len * iterations) as f64;
+        let mb_tokens = (total_bytes / (1024.0 * 1024.0)) / elapsed_tokens.as_secs_f64();
+        let mb_ids = (total_bytes / (1024.0 * 1024.0)) / elapsed_ids.as_secs_f64();
+        let us_tokens = elapsed_tokens.as_micros() as f64 / iterations as f64;
+        let us_ids = elapsed_ids.as_micros() as f64 / iterations as f64;
+
+        println!("\n=== END-TO-END PIPELINE BENCHMARK (Issue #96) ===");
+        println!("Input size: {} bytes", bytes_len);
+        println!("encode_text_native_inner (Tokens):");
+        println!("  Throughput: {:.2} MB/s", mb_tokens);
+        println!("  Latency:    {:.2} us/call", us_tokens);
+        println!("encode_text_native_ids_inner (Integer IDs):");
+        println!("  Throughput: {:.2} MB/s", mb_ids);
+        println!("  Latency:    {:.2} us/call", us_ids);
+        println!("=================================================\n");
+
+        let min_mb = if cfg!(debug_assertions) { 0.05 } else { 2.0 };
+        assert!(mb_tokens > min_mb, "Pipeline token throughput should be high");
+        assert!(mb_ids > min_mb, "Pipeline ID throughput should be high");
     }
 }

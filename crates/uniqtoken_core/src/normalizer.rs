@@ -74,13 +74,37 @@ pub(crate) fn normalize_inner(
     strip_whitespace: bool,
 ) -> CoreResult<String> {
     validate_space_char(space_char)?;
+
+    // Fast-path: pure ASCII text with default flags.
+    // In ASCII text:
+    // - NFKC is an identity
+    // - No unicode spaces exist
+    // - Metaspace escape only transforms ' ' -> space_char
+    if text.is_ascii()
+        && !normalize_punctuation
+        && !lowercase
+        && !collapse_whitespaces
+        && !strip_whitespace
+        && space_char != ' '
+    {
+        let mut out = String::with_capacity(text.len() + 8);
+        for b in text.bytes() {
+            if b == b' ' {
+                out.push(space_char);
+            } else {
+                out.push(b as char);
+            }
+        }
+        return Ok(out);
+    }
+
     // token-only path — no alignment, ~1.33× faster than with_alignment for ASCII
     let mut s = if normalize_unicode {
         text.nfkc().collect()
     } else {
         text.to_string()
     };
-    if normalize_unicode_spaces {
+    if normalize_unicode_spaces && s.chars().any(is_unicode_space) {
         s = s.chars().map(|c| if is_unicode_space(c) { ' ' } else { c }).collect();
     }
     if normalize_punctuation {
@@ -300,5 +324,13 @@ mod tests {
         let (s, a) = rust_normalize_with_alignment("A\u{030A}", '\u{2581}', true, true, false, false, false, false).unwrap();
         assert_eq!(s, "\u{00C5}");
         assert_eq!(a, vec![(0,2)]);
+    }
+
+    #[test]
+    fn ascii_fast_path_matches_slow_path_exactly() {
+        let text = "Hello world! This is a fast normalization test.";
+        let fast = normalize_inner(text, '\u{2581}', true, true, false, false, false, false).unwrap();
+        let expected = "Hello\u{2581}world!\u{2581}This\u{2581}is\u{2581}a\u{2581}fast\u{2581}normalization\u{2581}test.";
+        assert_eq!(fast, expected);
     }
 }
