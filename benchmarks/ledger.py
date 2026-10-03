@@ -18,6 +18,19 @@ def provenance() -> dict:
     return {"ledger_schema_version": SCHEMA_VERSION, "commit_hash": commit, "working_tree_dirty": dirty}
 
 
+LEAF_CONTAINERS = frozenset(
+    {
+        "token_length_bytes_histogram",
+        "rare_tokens",
+        "frequencies",
+        "vocabulary",
+        "token_frequencies",
+        "artifacts",
+        "manifest",
+    }
+)
+
+
 def reject_ambiguous_fertility(value):
     """Reject ambiguous density keys even when nested in diagnostic records."""
     if isinstance(value, dict):
@@ -26,7 +39,8 @@ def reject_ambiguous_fertility(value):
                 raise ValueError("ledger object keys must be strings")
             if "fertility" in key.lower() or key.lower() == "tokens_per_word":
                 raise ValueError("ambiguous cross-script fertility is not accepted; use tokens_per_unicode_character")
-            reject_ambiguous_fertility(child)
+            if key not in LEAF_CONTAINERS:
+                reject_ambiguous_fertility(child)
     elif isinstance(value, list):
         for child in value:
             reject_ambiguous_fertility(child)

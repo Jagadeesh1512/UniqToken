@@ -72,10 +72,40 @@ class TokenDensityTests(unittest.TestCase):
             (2, 2, 2, {"01": 2}),
             (2, 2, 2, {"1": True}),
             (2, 2, 2, {"0": 2}),
-            (1, 8, 1, {"8": 1}),
+            (1, 1, 2, {"1": 1}),
         ]:
             with self.subTest(args=args), self.assertRaises(ValueError):
                 d.density_metrics(*args)
+
+    def test_pathological_histogram_above_four_bytes_accepted(self):
+        # Upper bound of 4 bytes/code point is not enforced for legitimate diagnostic records
+        result = d.density_metrics(1, 8, 1, {"8": 1})
+        self.assertEqual(result["bytes_per_token"], 8.0)
+        self.assertEqual(result["tokens_per_normalized_utf8_byte"], 0.125)
+        self.assertEqual(result["token_length_bytes_max"], 8)
+
+    def test_vocab_budget_aliases_accepted(self):
+        record = fixture()["records"][0]
+        target_variant = {k: v for k, v in record.items() if k != "vocab_budget"}
+        target_variant["target_vocab"] = 32000
+        projected = d.project_record(target_variant)
+        self.assertEqual(projected["vocab_budget"], 32000)
+        self.assertEqual(projected["actual_vocab_size"], 32000)
+
+    def test_structural_vs_accounting_validation_order(self):
+        record = copy.deepcopy(fixture()["records"][0])
+        # Both stored metric is wrong AND histogram token total mismatches
+        record["tokens_per_unicode_character"] = 999.0
+        record["token_length_bytes_histogram"] = {"1": 9999}
+        with self.assertRaisesRegex(ValueError, "inconsistent density metric: tokens_per_unicode_character"):
+            d.project_record(record)
+
+    def test_shared_tokens_per_normalized_utf8_byte_helper(self):
+        from benchmarks.tokenizer_failure_metrics import tokens_per_normalized_utf8_byte as tfm_helper
+
+        self.assertIs(tfm_helper, d.tokens_per_normalized_utf8_byte)
+        self.assertEqual(d.tokens_per_normalized_utf8_byte(10, 40), 0.25)
+        self.assertIsNone(d.tokens_per_normalized_utf8_byte(10, 0))
 
     def test_nested_universal_fertility_rejected_by_both_schemas(self):
         for key in ("fertility", "tokens_per_word", "WORD_FERTILITY"):

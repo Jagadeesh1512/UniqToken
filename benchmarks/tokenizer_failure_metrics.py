@@ -11,6 +11,7 @@ import unicodedata
 from unittest.mock import patch
 
 from uniqtoken.byte_codec import ByteFallbackEngine
+from benchmarks.token_density import tokens_per_normalized_utf8_byte
 
 
 def require(condition, message):
@@ -192,7 +193,7 @@ class Counts:
             "tokens": tokens,
             "bytes_per_token": ratio(self.normalized_utf8_bytes, tokens),
             "tokens_per_unicode_character": ratio(tokens, self.unicode_characters),
-            "tokens_per_normalized_utf8_byte": ratio(tokens, self.normalized_utf8_bytes),
+            "tokens_per_normalized_utf8_byte": tokens_per_normalized_utf8_byte(tokens, self.normalized_utf8_bytes),
             "byte_fallback_tokens": self.byte_fallback_tokens,
             "byte_fallback_percent": ratio(self.byte_fallback_tokens, tokens, 100.0),
             "token_length_bytes_mean": ratio(self.normalized_utf8_bytes, tokens),

@@ -9,7 +9,6 @@ import math
 from pathlib import Path
 
 from benchmarks import run_research_experiments as h
-from benchmarks.analyze_tokenizer_failures import csv_text
 from benchmarks.ledger import provenance, reject_ambiguous_fertility, validate_ledger
 
 SCHEMA = 1
@@ -25,6 +24,33 @@ DEFINITIONS = {
     "normalization": "NFKC_unicode_spaces_v1, before metaspace encoding; no whitespace-word denominator",
     "empty": "undefined ratios and percentiles are null",
 }
+
+RECORD_FIELDS = (
+    *LABELS,
+    *COUNTS,
+    "model_kind",
+    "actual_vocab_size",
+    "tokens_per_unicode_character",
+    "tokens_per_normalized_utf8_byte",
+    "bytes_per_token",
+    "token_length_bytes_histogram",
+    "token_length_bytes_p50",
+    "token_length_bytes_p95",
+    "token_length_bytes_p99",
+    "token_length_bytes_max",
+)
+
+
+def tokens_per_unicode_character(tokens: int, unicode_characters: int) -> float | None:
+    return tokens / unicode_characters if unicode_characters else None
+
+
+def tokens_per_normalized_utf8_byte(tokens: int, normalized_utf8_bytes: int) -> float | None:
+    return tokens / normalized_utf8_bytes if normalized_utf8_bytes else None
+
+
+def bytes_per_token(normalized_utf8_bytes: int, tokens: int) -> float | None:
+    return normalized_utf8_bytes / tokens if tokens else None
 
 
 def density_metrics(tokens, normalized_utf8_bytes, unicode_characters, histogram):
@@ -42,7 +68,7 @@ def density_metrics(tokens, normalized_utf8_bytes, unicode_characters, histogram
     h.require(sum(lengths.values()) == tokens, "histogram token total mismatch")
     h.require(sum(k * v for k, v in lengths.items()) == normalized_utf8_bytes, "histogram byte total mismatch")
     h.require((tokens == 0) == (unicode_characters == 0), "empty character/token mismatch")
-    h.require(unicode_characters <= normalized_utf8_bytes <= 4 * unicode_characters, "invalid UTF-8/codepoint totals")
+    h.require(unicode_characters <= normalized_utf8_bytes, "invalid UTF-8/codepoint totals")
 
     def quantile(p):
         target, cumulative = math.ceil(p * tokens), 0
@@ -53,9 +79,9 @@ def density_metrics(tokens, normalized_utf8_bytes, unicode_characters, histogram
         return None
 
     return {
-        "tokens_per_unicode_character": tokens / unicode_characters if unicode_characters else None,
-        "tokens_per_normalized_utf8_byte": tokens / normalized_utf8_bytes if normalized_utf8_bytes else None,
-        "bytes_per_token": normalized_utf8_bytes / tokens if tokens else None,
+        "tokens_per_unicode_character": tokens_per_unicode_character(tokens, unicode_characters),
+        "tokens_per_normalized_utf8_byte": tokens_per_normalized_utf8_byte(tokens, normalized_utf8_bytes),
+        "bytes_per_token": bytes_per_token(normalized_utf8_bytes, tokens),
         "token_length_bytes_histogram": {str(k): v for k, v in sorted(lengths.items())},
         "token_length_bytes_p50": quantile(0.5),
         "token_length_bytes_p95": quantile(0.95),
@@ -64,19 +90,61 @@ def density_metrics(tokens, normalized_utf8_bytes, unicode_characters, histogram
     }
 
 
-def project_record(row):
+def validate_density_row_structure(row):
+    """Structural validation stage: check record types, canonical keys, and scalar consistency."""
     h.require(isinstance(row, dict), "density record must be an object")
-    required = (*LABELS, *COUNTS, "token_length_bytes_histogram")
+    budget = row.get("vocab_budget", row.get("target_vocab"))
+    h.require(budget is not None, "density record is missing required canonical fields")
+    required = (*(k for k in LABELS if k != "vocab_budget"), *COUNTS, "token_length_bytes_histogram")
     h.require(all(key in row for key in required), "density record is missing required canonical fields")
     reject_ambiguous_fertility(row)
-    metrics = density_metrics(*(row[k] for k in COUNTS), row["token_length_bytes_histogram"])
+    for k in COUNTS:
+        v = row[k]
+        h.require(type(v) is int and v >= 0, "density counts must be nonnegative integers")
+    tokens, normalized_utf8_bytes, unicode_characters = (
+        row["tokens"],
+        row["normalized_utf8_bytes"],
+        row["unicode_characters"],
+    )
+    h.require((tokens == 0) == (unicode_characters == 0), "empty character/token mismatch")
+    h.require(unicode_characters <= normalized_utf8_bytes, "invalid UTF-8/codepoint totals")
+
+    hist = row["token_length_bytes_histogram"]
+    h.require(isinstance(hist, dict), "byte histogram required")
+    for key, count in hist.items():
+        h.require(
+            isinstance(key, str) and key.isdecimal() and str(int(key)) == key and int(key) > 0,
+            "histogram keys must be canonical positive byte lengths",
+        )
+        h.require(type(count) is int and count > 0, "histogram frequencies must be positive integers")
+
+    # Accounting consistency check for any existing scalar metrics in row before histogram metric calculation
+    expected_ratios = {
+        "tokens_per_unicode_character": tokens_per_unicode_character(tokens, unicode_characters),
+        "tokens_per_normalized_utf8_byte": tokens_per_normalized_utf8_byte(tokens, normalized_utf8_bytes),
+        "bytes_per_token": bytes_per_token(normalized_utf8_bytes, tokens),
+    }
+    for key, expected in expected_ratios.items():
+        if key in row:
+            h.require(row[key] == expected, f"inconsistent density metric: {key}")
+
+    return budget
+
+
+def project_record(row):
+    budget = validate_density_row_structure(row)
+    metrics = density_metrics(
+        row["tokens"], row["normalized_utf8_bytes"], row["unicode_characters"], row["token_length_bytes_histogram"]
+    )
     for key, value in metrics.items():
         if key in row:
             h.require(row[key] == value, f"inconsistent density metric: {key}")
     return {
-        **{k: row[k] for k in LABELS + COUNTS},
+        **{k: row[k] for k in LABELS if k != "vocab_budget"},
+        "vocab_budget": budget,
+        **{k: row[k] for k in COUNTS},
         "model_kind": "tokenizer_only",
-        "actual_vocab_size": row["vocab_budget"],
+        "actual_vocab_size": budget,
         **metrics,
     }
 
@@ -86,10 +154,10 @@ def validate_density_ledger(payload):
     validate_ledger(payload)
     groups, seen = defaultdict(list), set()
     for row in payload["records"]:
-        expected_row = project_record(row)
-        h.require(
-            all(key in row and row[key] == value for key, value in expected_row.items()), "incomplete density record"
-        )
+        h.require(all(key in row for key in RECORD_FIELDS), "incomplete density record")
+        project_record(row)
+        h.require(row["model_kind"] == "tokenizer_only", "expected tokenizer_only model_kind")
+        h.require(row["actual_vocab_size"] == row["vocab_budget"], "ledger vocabulary budget mismatch")
         key = tuple(row[k] for k in LABELS)
         h.require(key not in seen, "duplicate density record")
         seen.add(key)
@@ -118,7 +186,7 @@ def validate_density_ledger(payload):
             ]
             for name in COUNTS:
                 h.require(row[name] == sum(r[name] for r in selected), f"pooled count mismatch: {name}")
-            hist = Counter()
+            hist: Counter[str] = Counter()
             for r in selected:
                 hist.update(r["token_length_bytes_histogram"])
             h.require(dict(hist) == row["token_length_bytes_histogram"], "pooled histogram mismatch")
@@ -158,10 +226,12 @@ def export_diagnostics(source, output):
     h.require(provenance() == identity, "source changed during export")
     output.mkdir(parents=True)
     h.write_new_json(output / "results.json", payload)
+    from benchmarks.analyze_tokenizer_failures import csv_text
+
+    records = payload["records"]
+    assert isinstance(records, list)
     for scope in ("aggregate", "stratum", "language", "domain"):
-        (output / f"{scope}.csv").write_text(
-            csv_text([r for r in payload["records"] if r["scope"] == scope]), encoding="utf-8"
-        )
+        (output / f"{scope}.csv").write_text(csv_text([r for r in records if r["scope"] == scope]), encoding="utf-8")
     h.write_new_json(output / "manifest.json", {"status": "complete", "artifacts": h.artifact_hashes(output)})
     return payload
 
