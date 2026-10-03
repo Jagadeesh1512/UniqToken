@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from dataclasses import asdict
-import json
 import math
 from pathlib import Path
 import time

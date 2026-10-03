@@ -1,6 +1,5 @@
 """Regression tests for reviewed PR #124; no external dataset required."""
 
-from collections import Counter
 import math
 from pathlib import Path
 import tempfile
@@ -40,6 +39,7 @@ class ByteFallbackReviewTests(unittest.TestCase):
                 self.assertEqual(measured["incomplete_prefix_additions"], 0)
                 self.assertEqual(len(measured["merges"]) + len(measured["recovered"]), 64)
                 passed, regressions = b.evaluate_regressions(baseline, measured["strata"], set(baseline))
+                self.assertTrue(passed)
                 self.assertEqual(measured["regression_gate_passed"], passed)
                 self.assertEqual(measured["regressions_pct"], regressions)
                 for stratum in measured["strata"].values():
