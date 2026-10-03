@@ -133,9 +133,8 @@ class CustomTokenizer:
         """
         from .merge_engine import get_merge_engine
 
-        resolved = get_merge_engine(engine)
-        self._resolved_merge_engine = resolved
-        self._merge_engine_arg = engine
+        engine_instance = get_merge_engine(engine)
+        self._resolved_merge_engine, self._merge_engine_arg = engine_instance, engine
 
     def _get_cached_merge_table(self) -> Any:
         self._sync_model_caches()
