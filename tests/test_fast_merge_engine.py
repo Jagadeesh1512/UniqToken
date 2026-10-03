@@ -543,11 +543,15 @@ class CustomTokenizerIntegrationTests(unittest.TestCase):
             self.assertIsNone(loaded_default_bin.merge_engine)
 
     def test_custom_engine_instance_warning_on_save(self):
+        import warnings
+
         fast_inst = FastMergeEngine()
         tok = _tokenizer([A, B], [A + B], merge_engine=fast_inst)
         with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertWarns(UserWarning):
+            with warnings.catch_warnings(record=True) as recorded:
+                warnings.simplefilter("always")
                 tok.save(tmpdir, save_binary=False)
+                self.assertTrue(any(issubclass(w.category, UserWarning) for w in recorded))
 
     def test_explicit_load_merge_engine_override(self):
         tok_fast = _tokenizer([A, B], [A + B], merge_engine="fast")
