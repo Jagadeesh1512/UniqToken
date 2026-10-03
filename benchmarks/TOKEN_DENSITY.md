@@ -40,3 +40,7 @@ reject ambiguous fertility fields even inside nested metric objects.
 The export retains the original measurement identity, model hashes, frozen
 assignment receipts, and a distinct export commit. Re-exporting old counts does
 not remeasure the tokenizers or imply new model results.
+
+The retained export in [token_density/issue90](token_density/issue90) contains
+963 rows from the nine frozen #85 models, with 18 aggregate rows, alongside
+stratum/language/domain detail. Its manifest hashes every JSON/CSV artifact.
