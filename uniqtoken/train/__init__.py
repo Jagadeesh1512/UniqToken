@@ -10,7 +10,7 @@ shared native Rust core (``crates/uniqtoken_core``).
 from ..bpe_model import BPEModel
 from ..bpe_trainer import BPETrainer
 from ..byte_codec import ByteFallbackEngine
-from ..cem_merger import CrossEntropyMerging, MergeRecord, SuperBPE
+from ..cem_merger import CrossEntropyMerging, SuperBPE
 from ..pre_tokenizer import Normalizer, PreToken, RegexPreTokenizer
 from ..seed_builder import SeedToken, SeedVocabularyBuilder
 from ..tokenizer import CustomTokenizer, Token, TokenizationReport
@@ -30,7 +30,6 @@ __all__ = [
     "BPEModel",
     "ByteFallbackEngine",
     "CrossEntropyMerging",
-    "MergeRecord",
     "SuperBPE",
     "VocabularyAdapter",
     "CustomTokenizer",

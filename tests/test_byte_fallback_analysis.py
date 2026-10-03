@@ -1,269 +1,151 @@
-from __future__ import annotations
+"""Regression tests for reviewed PR #124; no external dataset required."""
 
-"""Unit tests for Byte Fallback Analysis and Mitigation (Issue #86).
-
-Covers:
-- Fallback span extraction and contiguous run lengths
-- Fallback span statistical metrics and histogram calculation
-- Regression evaluation against predeclared threshold
-- ByteFallbackEngine multi-byte token detection and lossless roundtrip
-- CEM resolve_pair UTF-8 validity checks and fallback utility regularization
-- Exact budget invariance and MergeRecord provenance tracking
-"""
-
+from collections import Counter
+import math
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
-from benchmarks.byte_fallback_analysis import (
-    MAJOR_REFERENCE_STRATA,
-    compute_span_metrics,
-    evaluate_regressions,
-    extract_fallback_spans,
-)
-from uniqtoken.byte_codec import ByteFallbackEngine
-from uniqtoken.cem_merger import CrossEntropyMerging, MergeRecord, SuperBPE
+from benchmarks import byte_fallback_analysis as b
+from benchmarks import run_research_experiments as h
+from uniqtoken.byte_codec import ByteFallbackEngine as Bytes
 from uniqtoken.tokenizer import CustomTokenizer
+from uniqtoken.pre_tokenizer import Normalizer, RegexPreTokenizer
+from uniqtoken.unigram_trainer import UnigramModel
 
 
-class FallbackSpanExtractionTests(unittest.TestCase):
-    def test_empty_tokens(self):
-        self.assertEqual(extract_fallback_spans([]), [])
-
-    def test_no_fallback_tokens(self):
-        tokens = ["hello", "world", "this", "is", "a", "test"]
-        self.assertEqual(extract_fallback_spans(tokens), [])
-
-    def test_all_fallback_tokens(self):
-        tokens = ["<0xE0>", "<0xA4>", "<0xBE>", "<0xE0>", "<0xA5>"]
-        self.assertEqual(extract_fallback_spans(tokens), [5])
-
-    def test_contiguous_runs_and_multi_byte(self):
-        # 3 fallback bytes, regular token, 2 fallback bytes, regular token, multi-byte token
-        tokens = [
-            "start",
-            "<0xE0>",
-            "<0xA4>",
-            "<0xBE>",
-            "word",
-            "<0xC3>",
-            "<0xA9>",
-            "end",
-            "<0xE0><0xA4>",
-        ]
-        spans = extract_fallback_spans(tokens)
-        self.assertEqual(spans, [3, 2, 1])
+def byte_model():
+    pieces = [*h.SPECIALS, *(Bytes.byte_to_token(i) for i in range(256)), "a", "b", "\u2581"]
+    ids = {t: i for i, t in enumerate(pieces)}
+    return UnigramModel({t: -math.log(len(ids)) for t in pieces}, ids, {i: t for t, i in ids.items()}, list(h.SPECIALS))
 
 
-class SpanMetricsTests(unittest.TestCase):
-    def test_empty_spans(self):
-        metrics = compute_span_metrics([])
-        self.assertEqual(metrics["count"], 0)
-        self.assertEqual(metrics["mean"], 0.0)
-        self.assertEqual(metrics["median"], 0.0)
-        self.assertEqual(metrics["p95"], 0.0)
-        self.assertEqual(metrics["max"], 0)
-        hist = metrics["histogram"]
-        self.assertEqual(hist["len_1"], 0)
-        self.assertEqual(hist["len_2"], 0)
-        self.assertEqual(hist["len_3"], 0)
-        self.assertEqual(hist["len_4"], 0)
-        self.assertEqual(hist["len_5_6"], 0)
-        self.assertEqual(hist["len_7_plus"], 0)
+class ByteFallbackReviewTests(unittest.TestCase):
+    def test_span_units_are_bytes(self):
+        self.assertEqual(b.extract_fallback_spans(["a", "<0xE0>", "<0xA4>", "<0xBE>", "b", "<0xC3>", "<0xA9>"]), [3, 2])
+        self.assertEqual(b.extract_fallback_spans([]), [])
+        self.assertEqual(b.extract_fallback_spans(["a"]), [])
 
-    def test_single_span(self):
-        metrics = compute_span_metrics([3])
-        self.assertEqual(metrics["count"], 1)
-        self.assertEqual(metrics["mean"], 3.0)
-        self.assertEqual(metrics["median"], 3.0)
-        self.assertEqual(metrics["p95"], 3.0)
-        self.assertEqual(metrics["max"], 3)
-        self.assertEqual(metrics["histogram"]["len_3"], 1)
+    def test_exact_histogram_and_nearest_rank_percentiles(self):
+        result = b.compute_span_metrics([1, 2, 3, 3, 4, 5, 6, 8, 12])
+        self.assertEqual(result["histogram_bytes"], {"1": 1, "2": 1, "3": 2, "4": 1, "5": 1, "6": 1, "8": 1, "12": 1})
+        self.assertEqual(result["p50"], 4)
+        self.assertEqual(result["p95"], 12)
+        self.assertIsNone(b.compute_span_metrics([])["p95"])
 
-    def test_span_statistics_and_histogram(self):
-        spans = [1, 2, 3, 3, 4, 5, 6, 8, 12]
-        metrics = compute_span_metrics(spans)
-        self.assertEqual(metrics["count"], 9)
-        self.assertEqual(metrics["mean"], round(sum(spans) / 9.0, 2))
-        self.assertEqual(metrics["median"], 4.0)
-        self.assertEqual(metrics["max"], 12)
-        hist = metrics["histogram"]
-        self.assertEqual(hist["len_1"], 1)
-        self.assertEqual(hist["len_2"], 1)
-        self.assertEqual(hist["len_3"], 2)
-        self.assertEqual(hist["len_4"], 1)
-        self.assertEqual(hist["len_5_6"], 2)
-        self.assertEqual(hist["len_7_plus"], 2)
+    def test_no_multibyte_notation_extension(self):
+        self.assertFalse(Bytes.is_byte_token("<0xE0><0xA4>"))
+        self.assertEqual(Bytes.decode_tokens(["<0xE0><0xA4>"]), "<0xE0><0xA4>")
 
+    def test_atomic_recovery_all_utf8_widths(self):
+        model = byte_model()
+        chars = "\u00e9\u093e\U0001f600"
+        updated, records = b.recover_characters(model, [chars] * 4, 3)
+        self.assertEqual({row["token"] for row in records}, set(chars))
+        self.assertEqual({row["utf8_bytes"] for row in records}, {2, 3, 4})
+        self.assertEqual(len(updated.vocab), len(model.vocab) + 3)
+        self.assertEqual(updated.encode(chars), list(chars))
+        self.assertEqual(Bytes.decode_tokens(updated.encode(chars)), chars)
+        self.assertTrue(all(updated.token_to_id[t] == i for t, i in model.token_to_id.items()))
+        self.assertFalse(any(t.startswith("<0x") for t in set(updated.vocab) - set(model.vocab)))
+        self.assertNotIn(chars[0], model.vocab)
 
-class RegressionGatingTests(unittest.TestCase):
-    def test_pass_when_better_or_equal(self):
-        baseline = {
-            "latin_english": {"bytes_per_token": 2.500},
-            "code": {"bytes_per_token": 2.000},
-            "cyrillic": {"bytes_per_token": 3.000},
-            "african_latin": {"bytes_per_token": 2.200},
-        }
-        # Candidate has higher BpT (better compression)
-        cand = {
-            "latin_english": {"bytes_per_token": 2.550},
-            "code": {"bytes_per_token": 2.050},
-            "cyrillic": {"bytes_per_token": 3.000},
-            "african_latin": {"bytes_per_token": 2.300},
-        }
-        passed, regs = evaluate_regressions(baseline, cand, MAJOR_REFERENCE_STRATA, 1.0)
-        self.assertTrue(passed)
-        for val in regs.values():
-            self.assertEqual(val, 0.0)
+    def test_singletons_and_zero_limit_do_not_add_tokens(self):
+        model = byte_model()
+        self.assertEqual(b.recover_characters(model, ["\u00e9"], 10), (model, []))
+        self.assertEqual(b.recover_characters(model, ["\u00e9"] * 3, 0), (model, []))
 
-    def test_pass_within_threshold(self):
-        baseline = {
-            "latin_english": {"bytes_per_token": 2.000},
-            "code": {"bytes_per_token": 2.000},
-            "cyrillic": {"bytes_per_token": 2.000},
-            "african_latin": {"bytes_per_token": 2.000},
-        }
-        # Candidate has 0.5% drop on latin_english: 2.0 * (1 - 0.005) = 1.990
-        cand = {
-            "latin_english": {"bytes_per_token": 1.990},
-            "code": {"bytes_per_token": 2.000},
-            "cyrillic": {"bytes_per_token": 2.000},
-            "african_latin": {"bytes_per_token": 2.000},
-        }
-        passed, regs = evaluate_regressions(baseline, cand, MAJOR_REFERENCE_STRATA, 1.0)
-        self.assertTrue(passed)
-        self.assertAlmostEqual(regs["latin_english"], 0.5, places=2)
+    def test_weight_and_limit_validation(self):
+        for weight in (-1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                b.recover_characters(byte_model(), [], 1, weight)
+        for limit in (-1, 1.5):
+            with self.assertRaises(ValueError):
+                b.recover_characters(byte_model(), [], limit)
 
-    def test_fail_beyond_threshold(self):
-        baseline = {
-            "latin_english": {"bytes_per_token": 2.000},
-            "code": {"bytes_per_token": 2.000},
-            "cyrillic": {"bytes_per_token": 2.000},
-            "african_latin": {"bytes_per_token": 2.000},
-        }
-        # Code drops by 2.0%: 2.0 * (1 - 0.02) = 1.960
-        cand = {
-            "latin_english": {"bytes_per_token": 2.000},
-            "code": {"bytes_per_token": 1.960},
-            "cyrillic": {"bytes_per_token": 2.000},
-            "african_latin": {"bytes_per_token": 2.000},
-        }
-        passed, regs = evaluate_regressions(baseline, cand, MAJOR_REFERENCE_STRATA, 1.0)
-        self.assertFalse(passed)
-        self.assertAlmostEqual(regs["code"], 2.0, places=2)
+    def test_weight_formula_and_candidate_set(self):
+        model = byte_model()
+        chunks = ["\u00e9\u093e\U0001f600"] * 4
+        plain = {r["token"]: r for r in b.recovery_candidates(model, chunks)}
+        weighted = {r["token"]: r for r in b.recovery_candidates(model, chunks, 5)}
+        self.assertEqual(set(plain), set(weighted))
+        for token, row in plain.items():
+            self.assertAlmostEqual(weighted[token]["score"], row["score"] - 5 * row["frequency"] * row["utf8_bytes"])
 
-    def test_non_major_strata_ignored(self):
-        baseline = {
-            "latin_english": {"bytes_per_token": 2.000},
-            "code": {"bytes_per_token": 2.000},
-            "cyrillic": {"bytes_per_token": 2.000},
-            "african_latin": {"bytes_per_token": 2.000},
-            "indic": {"bytes_per_token": 3.000},
-        }
-        # Indic drops by 50%, but Indic is not a major reference stratum
-        cand = {
-            "latin_english": {"bytes_per_token": 2.000},
-            "code": {"bytes_per_token": 2.000},
-            "cyrillic": {"bytes_per_token": 2.000},
-            "african_latin": {"bytes_per_token": 2.000},
-            "indic": {"bytes_per_token": 1.500},
-        }
-        passed, regs = evaluate_regressions(baseline, cand, MAJOR_REFERENCE_STRATA, 1.0)
-        self.assertTrue(passed)
-        self.assertNotIn("indic", regs)
-
-
-class ByteFallbackEngineMultiByteTests(unittest.TestCase):
-    def test_is_byte_token_single_and_multi(self):
-        self.assertTrue(ByteFallbackEngine.is_byte_token("<0x00>"))
-        self.assertTrue(ByteFallbackEngine.is_byte_token("<0xFF>"))
-        self.assertTrue(ByteFallbackEngine.is_byte_token("<0xE0><0xA4>"))
-        self.assertTrue(ByteFallbackEngine.is_byte_token("<0xE0><0xA4><0xBE>"))
-        self.assertFalse(ByteFallbackEngine.is_byte_token("<0x0>"))
-        self.assertFalse(ByteFallbackEngine.is_byte_token("hello"))
-        self.assertFalse(ByteFallbackEngine.is_byte_token("<0xGG>"))
-
-    def test_token_to_bytes_single_and_multi(self):
-        self.assertEqual(ByteFallbackEngine.token_to_bytes("<0x41>"), b"A")
-        self.assertEqual(ByteFallbackEngine.token_to_bytes("<0xC3><0xA9>"), b"\xc3\xa9")
-        self.assertEqual(ByteFallbackEngine.token_to_bytes("<0xE0><0xA4><0xBE>"), b"\xe0\xa4\xbe")
-
-        with self.assertRaises(ValueError):
-            ByteFallbackEngine.token_to_bytes("not_a_byte_token")
-
-    def test_decode_tokens_multi_byte_roundtrip(self):
-        tokens = ["Hello, ", "<0xC3><0xA9>", "tudiants! ", "<0xE0><0xA4>", "<0xBE>"]
-        decoded = ByteFallbackEngine.decode_tokens(tokens)
-        self.assertEqual(decoded, "Hello, étudiants! \u093e")
-
-
-class CEMByteMergeResolutionTests(unittest.TestCase):
-    def test_resolve_pair_utf8_complete_merge(self):
-        cem = CrossEntropyMerging(allow_byte_merges=True)
-        # Train minimal base tokenizer
-        corpus = ["café café café " * 10]
-        tok = CustomTokenizer.train_from_corpus(corpus, target_vocab_size=280, verbose=False)
-
-        # Build chunks with byte tokens
-        chunks = ["<0xC3>", "<0xA9>"]
-        # Optimize with byte merge enabled
-        opt_model = cem.optimize(tok.model, chunks=chunks)
-        byte_records = [r for r in cem.merge_records if r.is_byte_merge]
-        if byte_records:
-            r = byte_records[0]
-            self.assertEqual(r.token_a, "<0xC3>")
-            self.assertEqual(r.token_b, "<0xA9>")
-            self.assertEqual(r.merged_token, "é")
-            self.assertEqual(r.decoded_str, "é")
-            self.assertEqual(r.byte_count_delta, 1)
-
-    def test_resolve_pair_byte_merges_forbidden_by_default(self):
-        cem = CrossEntropyMerging(allow_byte_merges=False)
-        corpus = ["café café café " * 10]
-        tok = CustomTokenizer.train_from_corpus(corpus, target_vocab_size=280, verbose=False)
-        chunks = ["<0xC3>", "<0xA9>"]
-        cem.optimize(tok.model, chunks=chunks)
-        self.assertEqual(len(cem.merge_records), 0)
-
-
-class SuperBPEFallbackAwareBudgetInvarianceTests(unittest.TestCase):
-    def test_exact_budget_invariance_and_provenance(self):
-        corpus = [
-            "भारत गणराज्य विविध संस्कृतियों और भाषाओं से समृद्ध देश है। " * 5,
-            "def optimize_metrics(tokens: list) -> float:\n    return len(tokens)\n" * 5,
-        ]
-        base_target = 400
-        actual_merges = 15
-        base_tok = CustomTokenizer.train_from_corpus(corpus, target_vocab_size=base_target, verbose=False)
-
-        pretok_chunks = [
-            tok for doc in corpus for tok in base_tok.pre_tokenizer.pre_tokenize(base_tok.normalizer.normalize(doc))
-        ]
-
-        super_bpe = SuperBPE(
-            max_merges=actual_merges,
-            allow_byte_merges=True,
-            fallback_weight=5.0,
-            verbose=False,
+    def test_deterministic_under_training_order(self):
+        chunks = ["\u00e9", "\u093e", "\U0001f600"] * 4
+        self.assertEqual(
+            b.recovery_candidates(byte_model(), chunks), b.recovery_candidates(byte_model(), reversed(chunks))
         )
-        opt_model = super_bpe.optimize(base_tok.model, chunks=pretok_chunks)
 
-        # Assert budget invariance: exact vocabulary size
-        self.assertEqual(len(opt_model.vocab), len(base_tok.model.vocab) + len(super_bpe.merges))
+    def test_roundtrip_ids_offsets_and_reload(self):
+        model, _ = b.recover_characters(byte_model(), ["\u00e9\u093e\U0001f600"] * 4, 3)
+        tok = CustomTokenizer(Normalizer(), RegexPreTokenizer(), model)
+        text = "a\u00e9\u093e\U0001f600 b"
+        ids = tok.encode_to_ids(text)
+        self.assertEqual(tok.decode(ids), text)
+        self.assertEqual([item.text for item in tok.encode_with_offsets(text)], tok.encode(text))
+        with tempfile.TemporaryDirectory() as directory:
+            tok.save(directory, save_binary=False)
+            loaded = CustomTokenizer.load(directory, prefer_binary=False)
+            self.assertEqual(loaded.encode_to_ids(text), ids)
+            self.assertEqual(loaded.decode(ids), text)
 
-        # Check MergeRecord provenance
-        self.assertEqual(len(super_bpe.merge_records), len(super_bpe.merges))
-        for r in super_bpe.merge_records:
-            self.assertIsInstance(r, MergeRecord)
-            self.assertIsNotNone(r.token_a)
-            self.assertIsNotNone(r.token_b)
-            self.assertIsNotNone(r.merged_token)
-            self.assertIsInstance(r.is_byte_merge, bool)
-            self.assertIsInstance(r.byte_count_delta, int)
-            self.assertIsInstance(r.frequency, int)
-            self.assertIsInstance(r.score, float)
+    def test_aggregate_bytes_are_normalized_source(self):
+        tok = CustomTokenizer(Normalizer(), RegexPreTokenizer(), byte_model())
+        metrics, emitted = b.evaluate_stratum(tok, ["a b", "\u093e"])
+        self.assertEqual(metrics["normalized_utf8_bytes"], 6)
+        self.assertEqual(metrics["fallback_tokens"], 3)
+        self.assertEqual(sum(emitted.values()), metrics["total_tokens"])
 
-        # Check special tokens preserved
-        for st in base_tok.model.special_tokens:
-            self.assertIn(st, opt_model.vocab)
+    def test_regression_gate_rejects_missing_or_undefined_strata(self):
+        baseline = {"hi": {"bytes_per_token": 2.0}, "code": {"bytes_per_token": 2.0}}
+        for candidate in ({}, {"hi": {"bytes_per_token": None}}, {"hi": {"bytes_per_token": float("nan")}}):
+            with self.assertRaises(ValueError):
+                b.evaluate_regressions(baseline, candidate, {"hi", "code"})
+        with self.assertRaises(ValueError):
+            b.evaluate_regressions(baseline, baseline, set())
+
+    def test_regression_gate_includes_tail_languages(self):
+        baseline = {"hi": {"bytes_per_token": 2.0}, "code": {"bytes_per_token": 2.0}}
+        candidate = {"hi": {"bytes_per_token": 1.96}, "code": {"bytes_per_token": 2.1}}
+        passed, values = b.evaluate_regressions(baseline, candidate, set(baseline))
+        self.assertFalse(passed)
+        self.assertAlmostEqual(values["hi"], 2.0)
+        self.assertEqual(values["code"], 0.0)
+
+    def test_exact_budget_rejected_for_undersized_seed(self):
+        with self.assertRaisesRegex(ValueError, "exact vocabulary"):
+            b.train_base(["a b"] * 4, 8192)
+
+    def test_final_budget_rejected_when_merges_exhausted(self):
+        base = CustomTokenizer(Normalizer(), RegexPreTokenizer(), byte_model())
+        with self.assertRaisesRegex(ValueError, "exact vocabulary"):
+            b.make_condition(base, ["a"], 300, 37, "baseline", 1, 5)
+
+    def test_stratum_sample_order_and_excerpt_are_fixed(self):
+        rows = [{"id": str(i), "domain": "web", "language": lang} for i, lang in enumerate(["hi", "en", "hi", "en"])]
+        picked = b.select_records(rows, ["abcd", "efgh", "ijkl", "mnop"], 1, 2)
+        self.assertEqual([(r["id"], t) for r, t in picked], [("0", "ab"), ("1", "ef")])
+
+    def test_split_alias_guard_runs_before_loader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            manifest = {
+                "splits": {
+                    "train": {"path": "test.jsonl"},
+                    "validation": {"path": "v.jsonl"},
+                    "test": {"path": "test.jsonl"},
+                }
+            }
+            with (
+                patch.object(h, "read_json", return_value=manifest),
+                patch.object(b.stages, "load_stage_source") as loader,
+            ):
+                with self.assertRaisesRegex(ValueError, "alias"):
+                    b.assignments(path)
+                loader.assert_not_called()
 
 
 if __name__ == "__main__":

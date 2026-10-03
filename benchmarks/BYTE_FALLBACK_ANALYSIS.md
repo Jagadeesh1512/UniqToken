@@ -1,128 +1,88 @@
-# Research Report: Byte Fallback Pressure Analysis & Mitigation (Issue #86)
+# Byte fallback pressure: atomic recovery protocol
 
-## 1. Executive Summary & Research Question
+This experiment addresses #86 with complete Unicode scalar recovery. It is an
+offline research candidate; the library's canonical one-byte fallback format and
+existing multilingual CEM behavior are unchanged.
 
-**Research Question**: *Why is byte fallback structurally concentrated in particular languages or strata (specifically Indic scripts: Hindi, Bengali, Gujarati, Telugu, Tamil, Malayalam, Marathi, Kannada, and Semitic scripts: Arabic, Urdu) at 8K–32K vocabulary budgets, and can a narrowly justified merge or scoring change in SuperBPE/CEM reduce that pressure without producing pathological vocabulary allocation or regressing major reference strata?*
+## Review corrections
 
-### Key Empirical Findings
-1. **Structural Root Cause Identified**: In Indic writing systems, dependent vowel signs (matras), halants/viramas (vowel-killer marks), and anusvaras belong to Unicode general category `\p{M}` (combining marks). `SeedVocabularyBuilder.collect_base_alphabet` explicitly strips combining marks to prevent unattached combining characters in the initial alphabet (addressing Issue #41). Under compact 8K–32K vocabulary budgets, aggressive Unigram EM pruning discards infrequent compound tail n-grams. Because combining marks were never included in `required_tokens`, they are completely absent from the base Unigram vocabulary. Every occurrence of these essential orthographic marks is forced into contiguous 3-byte fallback sequences (e.g., Devanagari AA-matra `\u093E` becoming `<0xE0><0xA4><0xBE>`), driving Indic byte fallback rates above **65%**.
-2. **H1 Supported (Byte-Merge Ban Bottleneck)**: Baseline SuperBPE / Cross-Entropy Merging (CEM) explicitly prohibited byte fallback tokens from merging (`if ByteFallbackEngine.is_byte_token(t): return False`). Permitting incremental UTF-8 valid byte merges (`allow_byte_merges=True`) allows the tokenizer to reconstruct missing Unicode combining marks and tail characters directly from raw byte fallback streams.
-3. **H2 Supported (Frequency Starvation under Likelihood Scoring)**: Under raw likelihood scoring $\Delta\text{CE} = f \cdot (\log P(a) + \log P(b) - \log \hat{P}(ab))$, dominant high-frequency Latin and code whitespace/keyword pairs outcompete tail fallback tokens when merge capacity is constrained, leaving fallback runs incomplete or as multi-byte prefixes unless fallback utility is explicitly prioritized.
-4. **H3 Supported (Fallback-Aware Utility Regularization)**: Adding a fallback-reduction utility regularization term to candidate merge scoring:
-   $$\text{Score}(a, b) = f \cdot \left(\log P(a) + \log P(b) - \log \hat{P}(ab)\right) - \lambda_{\text{fallback}} \cdot f \cdot \Delta_{\text{fallback}}$$
-   channels merge selection into completing multi-byte UTF-8 sequences. This reduces Indic fallback rates from **68.0% down to 37.4%**, cuts contiguous 3-byte fallback runs from **154 down to 50**, reduces maximum span lengths from **27 down to 18**, and reconstructs complete Indic matras and viramas (`্`, `ం`, `া`, `्`, `ा`, `ি`, `്`, `ं`, `్`, `્`) with **0.00% regression** across all major reference strata (`latin_english`, `code`, `cyrillic`, `african_latin`), strictly satisfying the predeclared $\le 1.0\%$ threshold.
+The original PR's results used approximately 1.6K vocabulary entries while
+labeling them 8K, 16K and 32K. Those artifacts and positive conclusions are
+withdrawn. Incomplete UTF-8 prefix entries were unreachable as source subwords
+and could change literal-notation decoding. The revised experiment never creates
+them. Byte spans count source bytes, not escaped spellings or merged IDs.
 
----
+## Predeclared hypotheses
 
-## 2. Theoretical Framework & Hypotheses
+- H1: admitting missing whole characters selected from training fallback runs
+  reduces fallback emissions and contiguous byte-span lengths on validation.
+  Report all per-stratum changes, including any increased p95 or maximum.
+- H2: selecting recovery slots using an added fallback-byte utility term changes
+  the chosen characters and improves fallback relative to unweighted recovery.
+  Identical selections or validation outcomes provide no evidence of benefit.
+- H3: recovery can use 16 of 64 reserved vocabulary slots while keeping normalized
+  bytes/token loss at or below 1% in EVERY observed validation stratum. A failed
+  stratum rejects this policy for that budget. Missing validation coverage is
+  explicitly uncertified. No aggregate winner overrides a failed stratum.
+- Every addition is audited for training/validation emissions. Zero validation
+  emissions alone do not establish that a token can never occur. Any incomplete
+  byte-prefix addition is an implementation failure.
 
-### 2.1 Hypotheses & Falsification Criteria
+These hypotheses are registered in source before the revised measurements.
+The former Latin-starvation hypothesis is not tested by this sequential policy:
+it does not put ordinary pairs and character recoveries in one competing queue.
 
-| Hypothesis | Formulation & Prediction | Falsification Criterion | Empirical Status |
-|:---|:---|:---|:---:|
-| **H1 (Byte-Merge Ban)** | The baseline prohibition on byte fallback merges creates an impassable bottleneck preventing the tokenizer from recovering missing combining marks. Permitting UTF-8 valid byte merges reduces fallback rate and span lengths. | No statistically meaningful decrease in fallback token percentage or contiguous byte-span lengths when `allow_byte_merges=True`. | **Validated** |
-| **H2 (Frequency Starvation)** | Under standard cross-entropy likelihood scoring, high-frequency Latin cross-word pairs outcompete tail-language fallback pairs for limited merge capacity. | Unweighted `allow_byte_merges=True` completes all tail fallback characters under tightly constrained merge capacity without utility reweighting. | **Validated** |
-| **H3 (Utility Regularization)** | Augmenting merge selection with a fallback-reduction utility bonus ($\lambda_{\text{fallback}} > 0$) prioritizes character completion without regressing major reference strata. | Regression $> 1.0\%$ BpT on any major reference stratum (`latin_english`, `code`, `cyrillic`, `african_latin`) or generation of pathological dead tokens. | **Validated** |
+## Fixed matrix and units
 
----
+All three conditions use 8,192 / 16,384 / 32,768 total vocabulary entries,
+including four controls and 256 byte leaves. Each budget shares one Unigram seed
+of target minus 64 entries. Baseline spends all 64 entries on ordinary SuperBPE.
+Recovery conditions admit up to 16 missing Unicode scalars first, then spend the
+remaining slots on the same SuperBPE implementation. Underfilled seeds or final
+models are errors, never padded or relabeled.
 
-## 3. Mathematical Formulation & Scoring Objectives
+For candidate character c, f is its count in training fallback runs, N is all
+training token emissions, and B(c) is its sequence of canonical byte leaves:
 
-### 3.1 Standard Cross-Entropy Merging
-In standard Cross-Entropy Merging (CEM / SuperBPE), candidate merges are selected to maximize cross-entropy reduction over adjacent token streams:
+    CE(c) = f * (sum(log P(b) for b in B(c)) - log(f/N))
+    score(c) = CE(c) - lambda * f * len(UTF8(c))
 
-$$\Delta\text{CE}(a, b) = f(a, b) \cdot \left(\log P(a) + \log P(b) - \log \frac{f(a, b)}{N}\right)$$
+Lower scores rank first, followed by higher frequency and lexical character
+order. The CE-like admission term uses nats times occurrences. Lambda has units
+nats per fallback byte and is fixed at 0 or 5; it is not tuned on validation.
+Only complete two-, three-, or four-byte scalars occurring at least twice are
+eligible. This is a fixed-candidate admission calculation, not an exact corpus
+likelihood difference. Existing IDs are retained, then probabilities normalized.
 
-where $f(a, b)$ is pair frequency, $N$ is total adjacent pairs, and $P(a)$ is Unigram model probability.
+Training takes the first 32 documents per domain/language stratum from the frozen
+training split, each truncated to its first 2,048 normalized Unicode characters.
+Validation independently applies that same rule to the frozen validation split.
+Every selected ID and excerpt hash is retained. Exact normalized excerpt or ID
+overlap aborts the run. This is a bounded diagnostic subset, not full Phase A
+training or its published baseline. No random sampling, held-out test access,
+language-model run, or change to any frozen Phase A/B/C artifact occurs.
+The test hash is copied from manifest metadata; its file is never opened.
 
-### 3.2 UTF-8 Safe Byte Pair Resolution
-When `allow_byte_merges=True`, two adjacent byte tokens $a$ and $b$ (e.g., `<0xE0>` and `<0xA4>`) can be merged if and only if their concatenated raw byte sequence forms a valid UTF-8 prefix or a complete UTF-8 character.
+Bytes/token uses normalized UTF-8 source bytes divided by emitted tokens.
+Fallback percentage is canonical fallback emissions / all emissions * 100.
+Span histograms use contiguous fallback bytes; quantiles use nearest rank.
+A stratum without spans has null span statistics. Ratios and regression gates
+use unrounded counts. Major-stratum regression includes every observed
+validation stratum, including tail languages.
 
-Let $B(t)$ map a canonical byte token to its underlying byte sequence:
-1. $R = B(a) + B(b)$.
-2. We feed $R$ into an incremental UTF-8 decoder (`codecs.getincrementaldecoder("utf-8")`).
-3. If $R$ triggers `UnicodeDecodeError`, the pair is rejected (`resolve_pair` returns `None`).
-4. If $R$ decodes into a complete Unicode string $S$, the merged token is $S$, `is_byte_merge=True`, `decoded_str=S`, and `byte_count_delta = len(B(a)) + len(B(b)) - 1`.
-5. If $R$ is a valid UTF-8 prefix but incomplete, the merged token is formatted as canonical byte tokens (e.g. `<0xE0><0xA4>`), `decoded_str=None`, and `byte_count_delta = 1`.
+## Reproduce
 
-### 3.3 Fallback-Aware Utility Regularization
-To overcome frequency starvation of tail-script fallbacks, we introduce the fallback regularization term:
+From a clean checkout with the native extension installed:
 
-$$\text{Score}(a, b) = \Delta\text{CE}(a, b) - \lambda_{\text{fallback}} \cdot f(a, b) \cdot \Delta_{\text{fallback}}(a, b)$$
-
-where:
-- $\lambda_{\text{fallback}} \ge 0$ is the regularization weight (default 5.0).
-- $\Delta_{\text{fallback}}(a, b)$ is the net decrease in fallback tokens achieved by applying the merge. For a merge completing a multi-byte character, $\Delta_{\text{fallback}} = 2$, rewarding complete character reconstruction.
-
-### 3.4 Deterministic Min-Heap Ordering
-Candidate merges are organized in a min-heap using the deterministic `_HeapEntry` dataclass:
-$$\left(\text{Score}(a, b), \ -f(a, b), \ \log\hat{P}(ab), \ a, \ b\right)$$
-All fields are strictly comparable; ties are broken deterministically by subword string ordering.
-
----
-
-## 4. Empirical Evaluation Across Budgets (8K, 16K, 32K)
-
-Evaluations were performed across frozen, cryptographically hashed multi-script datasets comprising 6 strata:
-- Target fallback strata: Indic (8 languages: `hi`, `bn`, `gu`, `te`, `ta`, `ml`, `mr`, `kn`), Semitic Arabic script (`ar`, `ur`, `fa`).
-- Major reference strata: `latin_english` (`en`, `es`), `cyrillic` (`ru`, `bg`), `african_latin` (`sw`, `yo`), and `code` (Python, JavaScript).
-
-### 4.1 Tokenizer Compression and Fallback Rates
-
-| Budget | Condition | Indic Fallback % | Arabic Fallback % | Latin BpT | Code BpT | Cyrillic BpT | Max Reg % | Gate Status |
-|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **8192** | `SuperBPE_Baseline` | 68.0% | 4.7% | 2.143 | 1.856 | 2.610 | 0.00% | **PASS** |
-| | `SuperBPE_ByteMerges` | 37.4% | 4.7% | 2.143 | 1.874 | 2.630 | 0.00% | **PASS** |
-| | `SuperBPE_FallbackAware` | **37.4%** | **4.7%** | 2.143 | 1.874 | 2.630 | **0.00%** | **PASS** |
-| **16384** | `SuperBPE_Baseline` | 68.0% | 4.7% | 2.143 | 1.856 | 2.610 | 0.00% | **PASS** |
-| | `SuperBPE_ByteMerges` | 37.4% | 4.7% | 2.143 | 1.874 | 2.630 | 0.00% | **PASS** |
-| | `SuperBPE_FallbackAware` | **37.4%** | **4.7%** | 2.143 | 1.874 | 2.630 | **0.00%** | **PASS** |
-| **32768** | `SuperBPE_Baseline` | 68.0% | 4.7% | 2.143 | 1.856 | 2.610 | 0.00% | **PASS** |
-| | `SuperBPE_ByteMerges` | 37.4% | 4.7% | 2.143 | 1.874 | 2.630 | 0.00% | **PASS** |
-| | `SuperBPE_FallbackAware` | **37.4%** | **4.7%** | 2.143 | 1.874 | 2.630 | **0.00%** | **PASS** |
-
-### 4.2 Contiguous Fallback Byte-Span Length Distributions (Indic Stratum)
-
-| Condition | Mean Span | Median (p50) | p95 | Max Span | Len 1 | Len 2 | Len 3 (Chars) | Len 4+ |
-|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `SuperBPE_Baseline` | 4.05 | 3.0 | 9.0 | 27 | 0 | 0 | 154 | 34 |
-| `SuperBPE_ByteMerges` | 4.59 | 3.0 | 15.0 | 18 | 0 | 0 | 50 | 16 |
-| `SuperBPE_FallbackAware` | **4.59** | **3.0** | **15.0** | **18** | **0** | **0** | **50** | **16** |
-
-*Note*: In `SuperBPE_Baseline`, 154 isolated 3-byte fallback runs occurred due to missing Indic combining characters. Enabling byte merges allowed the model to reconstruct those characters, eliminating over 104 individual fallback runs (**67.5% reduction in 3-byte runs**) and reducing maximum contiguous span from 27 down to 18 bytes.
-
-### 4.3 Learned Reconstructed Unicode Characters
-The fallback-aware merger successfully reconstructed the following combining marks and characters from raw byte sequences:
-- Bengali Virama / Halant: `্` (`<0xE0><0xA7>` + `<0x8D>`)
-- Telugu Anusvara: `ం` (`<0xE0><0xB0>` + `<0x82>`)
-- Bengali AA-Matra: `া` (`<0xE0><0xA6>` + `<0xBE>`)
-- Devanagari Virama / Halant: `्` (`<0xE0><0xA5>` + `<0x8D>`)
-- Devanagari AA-Matra: `ा` (`<0xE0><0xA4>` + `<0xBE>`)
-- Bengali I-Matra: `ি` (`<0xE0><0xA6>` + `<0xBF>`)
-- Malayalam Virama / Chandrakkala: `്` (`<0xE0><0xB5>` + `<0x8D>`)
-- Devanagari Anusvara: `ं` (`<0xE0><0xA4>` + `<0x82>`)
-- Telugu Virama: `్` (`<0xE0><0xB1>` + `<0x8D>`)
-- Gujarati Virama: `્` (`<0xE0><0xAB>` + `<0x8D>`)
-
----
-
-## 5. Research Integrity & Verification Ledger
-
-1. **Frozen Dataset Partitions & Unopened Test Data**: All training and validation splits were cryptographically verified using SHA-256 hashes recorded in `results.json`. The held-out test split was kept strictly unopened and was not tokenized, inspected, or scored.
-2. **Bit-Exact Vocabulary Accounting Invariance**: For every model, `len(model.vocab) == len(base_vocab) + len(merges)` was asserted, preserving exact budget allocations and special-token accounting invariants.
-3. **Predeclared Maximum Regression Threshold**: A maximum BpT regression threshold of $\le 1.0\%$ was predeclared for all major reference strata (`latin_english`, `cyrillic`, `african_latin`, `code`). The empirical maximum regression observed was **0.00%**, fully satisfying the gate.
-4. **Pathological Token Audit**: 0 dead or runaway byte-prefix tokens were observed in the final learned vocabulary.
-
----
-
-## 6. Reproduction Commands
-
-To reproduce the benchmark results and re-generate all artifacts:
-```bash
-python benchmarks/byte_fallback_analysis.py --budgets 8192 16384 32768 --output benchmarks/byte_fallback/issue86
+```powershell
+$env:RAYON_NUM_THREADS = "1"
+$env:PYTHONHASHSEED = "0"
+python -m benchmarks.byte_fallback_analysis --dataset artifacts/data/phase-a-madlad-stack-flores-v1/manifest.json --output artifacts/byte-fallback-reviewed --budgets 8192 16384 32768
+python -m unittest tests.test_byte_fallback_analysis -v
 ```
 
-To run the unit tests:
-```bash
-python -m unittest tests/test_byte_fallback_analysis.py -v
-```
+The output must be new and outside the frozen source directory. Results include
+source/runtime identity, fixed configuration, assignment receipts, model hashes,
+all learned additions, utilization, per-stratum fallback histograms, CSV and a
+data-derived report. A final manifest hashes the complete output. Model files are
+retained locally; their hashes identify the artifacts used for each result.

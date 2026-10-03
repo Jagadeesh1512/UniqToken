@@ -1,0 +1,9 @@
+{
+  "status": "complete",
+  "artifacts": {
+    "REPORT.md": "ee0d55652dfb2de38236cd286be53e58393c47e9b41166bc5713ae7381791bea",
+    "results.json": "8e6de9dcad547b44e87d7c288cfe571910dfe9c359e6400bd9ad6384b3c83633",
+    "strata_allocation.csv": "de678f8c29a37596c3d4f8df152d786148b2fc27a81a4edc54af1467c3b189cb",
+    "validation_compression.csv": "345aedd4390df4f89859509068ed3c8513b9e6d018c452aebfd7afb0f44e7b20"
+  }
+}

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import codecs
-from dataclasses import dataclass, field
-import heapq
 import math
-from collections import Counter, defaultdict
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections import Counter
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .byte_codec import ByteFallbackEngine
 from .unigram_trainer import UnigramModel
@@ -13,29 +11,16 @@ from .unigram_trainer import UnigramModel
 
 @dataclass(frozen=True)
 class MergeRecord:
-    """Provenance tracking record for a learned merge in CEM / SuperBPE."""
+    """Provenance and per-stratum allocation record for a single learned merge."""
 
-    token_a: str
-    token_b: str
-    merged_token: str
+    left: str
+    right: str
+    merged: str
     score: float
-    frequency: int
-    is_byte_merge: bool = False
-    decoded_str: Optional[str] = None
-    byte_count_delta: int = 0
-
-
-@dataclass(order=True)
-class _HeapEntry:
-    score: float
-    neg_freq: int
-    log_p_hat: float
-    token_a: str
-    token_b: str
-    merged: str = field(compare=False)
-    is_byte: bool = field(compare=False)
-    decoded: Optional[str] = field(compare=False)
-    fallback_delta: int = field(compare=False)
+    total_frequency: int
+    strata_frequencies: Dict[str, int]
+    dominant_stratum: str
+    dominance_ratio: float
 
 
 class CrossEntropyMerging:
@@ -63,14 +48,9 @@ class CrossEntropyMerging:
     space character are accepted, producing tokens such as ``the\u2581``,
     ``\u2581quick`` and ``the\u2581quick`` that span word boundaries.
 
-    When ``allow_byte_merges=True``, adjacent byte fallback tokens are permitted
-    to merge if their concatenated bytes form valid UTF-8 sequences or prefixes.
-    Complete sequences are decoded directly to character strings.
-
-    When ``fallback_weight > 0.0``, fallback-reduction utility scoring subtracts
-    ``fallback_weight * f * fallback_delta`` from the score, prioritizing merges
-    that eliminate fallback pressure in tail strata without producing pathological
-    allocations.
+    Supports multilingual-aware and coverage-aware merge scoring strategies
+    to prevent over-represented training strata from monopolizing all learned
+    merges without using hard-coded language token lists (#88).
     """
 
     def __init__(
@@ -81,137 +61,221 @@ class CrossEntropyMerging:
         cross_word: bool = False,
         space_char: str = "\u2581",
         min_pmi: Optional[float] = None,
-        allow_byte_merges: bool = False,
-        fallback_weight: float = 0.0,
+        scoring_strategy: str = "global",
+        strata_alpha: float = 0.5,
+        coverage_weight: float = 1.0,
     ):
+        """Initializes the CrossEntropyMerging optimizer.
+
+        Args:
+            max_merges: Maximum number of merged tokens to add.
+            max_score: Score threshold (merges with score >= max_score are discarded).
+            verbose: Whether to print progress logs during optimization.
+            cross_word: If True, operates across word boundaries (SuperBPE).
+            space_char: Space token/character used to designate word boundaries.
+            min_pmi: Optional minimum Pointwise Mutual Information threshold.
+            scoring_strategy: Scoring objective ('global', 'balanced', or 'coverage_aware').
+            strata_alpha: Smoothing temperature exponent for stratum-balanced scoring.
+            coverage_weight: Multiplier weight for cross-stratum coverage entropy bonus.
+        """
         if max_merges < 0:
             raise ValueError("max_merges must not be negative")
-        if fallback_weight < 0.0:
-            raise ValueError("fallback_weight must not be negative")
+        if scoring_strategy not in ("global", "balanced", "coverage_aware"):
+            raise ValueError(
+                f"Unknown scoring_strategy {scoring_strategy!r}; must be 'global', 'balanced', or 'coverage_aware'"
+            )
+        if not math.isfinite(strata_alpha) or not 0.0 <= strata_alpha <= 1.0:
+            raise ValueError("strata_alpha must be finite and between zero and one")
+        if not math.isfinite(coverage_weight) or coverage_weight < 0.0:
+            raise ValueError("coverage_weight must be finite and non-negative")
         self.max_merges = max_merges
         self.max_score = max_score
         self.verbose = verbose
         self.cross_word = cross_word
         self.space_char = space_char
         self.min_pmi = min_pmi
-        self.allow_byte_merges = allow_byte_merges
-        self.fallback_weight = fallback_weight
+        self.scoring_strategy = scoring_strategy
+        self.strata_alpha = strata_alpha
+        self.coverage_weight = coverage_weight
         self.merges: List[Tuple[str, str, str, float, int]] = []
-        self.merge_records: List[MergeRecord] = []
+        self.merge_provenance: List[MergeRecord] = []
 
-    def optimize(self, model: UnigramModel, chunks: Iterable[str]) -> UnigramModel:
+    def optimize(
+        self,
+        model: UnigramModel,
+        chunks: Iterable[str],
+        strata: Optional[Iterable[str]] = None,
+    ) -> UnigramModel:
         """Returns a new model with CEM/SuperBPE-merged tokens; IDs of existing tokens are unchanged."""
         self.merges.clear()
-        self.merge_records.clear()
+        self.merge_provenance.clear()
         if self.max_merges == 0:
             return model
 
         special_tokens = set(model.special_tokens)
+        byte_pattern = ByteFallbackEngine.BYTE_TOKEN_PATTERN
         max_len = model.max_subword_len
         new_probs: Dict[str, float] = {}
 
         def log_prob(token: str) -> float:
+            """Returns the log probability of a token from model vocab or newly merged tokens."""
             lp = model.vocab.get(token)
             if lp is not None:
                 return lp
             return new_probs[token]
 
         def mergeable(token: str) -> bool:
+            """Checks whether a token is eligible to participate in subword merges."""
             if token in special_tokens:
                 return False
-            if ByteFallbackEngine.is_byte_token(token):
-                if not self.allow_byte_merges:
-                    return False
-                return token in model.vocab or token in new_probs
+            if byte_pattern.match(token):
+                return False
             return token in model.vocab or token in new_probs
 
-        def resolve_pair(a: str, b: str) -> Optional[Tuple[str, bool, Optional[str], int]]:
-            is_a_byte = ByteFallbackEngine.is_byte_token(a)
-            is_b_byte = ByteFallbackEngine.is_byte_token(b)
-            if is_a_byte and is_b_byte:
-                if not self.allow_byte_merges:
-                    return None
-                try:
-                    bytes_a = ByteFallbackEngine.token_to_bytes(a)
-                    bytes_b = ByteFallbackEngine.token_to_bytes(b)
-                except ValueError:
-                    return None
-                raw_bytes = bytes_a + bytes_b
-                dec = codecs.getincrementaldecoder("utf-8")()
-                try:
-                    dec.decode(raw_bytes, final=False)
-                except UnicodeDecodeError:
-                    return None
-                try:
-                    decoded = raw_bytes.decode("utf-8")
-                    return decoded, True, decoded, 2
-                except UnicodeDecodeError:
-                    if len(raw_bytes) > 4:
-                        return None
-                    merged_token = "".join(f"<0x{x:02X}>" for x in raw_bytes)
-                    return merged_token, True, None, 1
-            elif is_a_byte or is_b_byte:
-                return None
+        from collections import defaultdict
+
+        # ponytail: materialize once — chunks is consumed multiple times below and
+        # a generator input would silently yield an empty model
+        chunks_raw = list(chunks)
+        if strata is not None:
+            strata_raw = list(strata)
+            if len(strata_raw) != len(chunks_raw):
+                raise ValueError(f"Mismatched chunks ({len(chunks_raw)}) and strata ({len(strata_raw)})")
+            chunks_with_strata = [(c, s) for c, s in zip(chunks_raw, strata_raw) if c]
+            chunks = [c for c, _ in chunks_with_strata]
+            chunk_strata = [s for _, s in chunks_with_strata]
+        else:
+            chunks = [c for c in chunks_raw if c]
+            chunk_strata = ["all"] * len(chunks)
+
+        unique_chunks = set(chunks)
+        chunk_enc_map = {chunk: model.encode(chunk) for chunk in unique_chunks}
+
+        streams: List[List[str]] = []
+        stream_strata: List[str] = []
+        if self.cross_word:
+            cur_stream: List[str] = []
+            cur_stratum: str = chunk_strata[0] if chunk_strata else "all"
+            for chunk, st in zip(chunks, chunk_strata):
+                if not chunk:
+                    continue
+                # Split stream if stratum changes so cross-word merges stay intra-stratum
+                if st != cur_stratum:
+                    if cur_stream:
+                        streams.append(cur_stream)
+                        stream_strata.append(cur_stratum)
+                        cur_stream = []
+                    cur_stratum = st
+                cur_stream.extend(chunk_enc_map[chunk])
+                if len(cur_stream) >= 200:
+                    streams.append(cur_stream)
+                    stream_strata.append(cur_stratum)
+                    cur_stream = []
+            if cur_stream:
+                streams.append(cur_stream)
+                stream_strata.append(cur_stratum)
+        else:
+            streams = [chunk_enc_map[chunk] for chunk in chunks if chunk]
+            stream_strata = list(chunk_strata)
+
+        # 1. Build initial inverted pair index with stratum distribution tracking
+        pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+        pair_strata_counts: Dict[Tuple[str, str], Counter[str]] = defaultdict(Counter)
+        pair_to_streams: Dict[Tuple[str, str], Set[int]] = defaultdict(set)
+        stratum_total_pairs: Counter[str] = Counter()
+        total_pairs = 0
+
+        for s_idx, stream in enumerate(streams):
+            st = stream_strata[s_idx]
+            for i in range(len(stream) - 1):
+                p = (stream[i], stream[i + 1])
+                pair_counts[p] += 1
+                pair_strata_counts[p][st] += 1
+                pair_to_streams[p].add(s_idx)
+                stratum_total_pairs[st] += 1
+                total_pairs += 1
+
+        all_active_strata = sorted(stratum_total_pairs.keys())
+
+        import heapq
+
+        def compute_pair_score(a: str, b: str, f: int, tot: int) -> Tuple[float, float, str]:
+            """Computes the merge score, empirical log probability, and concatenated token string."""
+            log_p_hat = math.log(f / max(tot, 1))
+            pair = (a, b)
+            if (
+                self.scoring_strategy == "global"
+                or len(all_active_strata) <= 1
+                or (self.scoring_strategy == "balanced" and abs(self.strata_alpha - 1.0) < 1e-9)
+            ):
+                score = f * (log_prob(a) + log_prob(b) - log_p_hat)
+            elif self.scoring_strategy == "balanced":
+                # Stratum-balanced score: cross-entropy reduction reweighted across strata.
+                # Standard temperature smoothing: target proportion q_s \propto N_s^\alpha.
+                # Natural proportion p_s = N_s / N_total.
+                # Instance reweighting factor W_s = q_s / p_s = (N_s^\alpha / \sum_k N_k^\alpha) / (N_s / N_total).
+                # When \alpha = 1.0, W_s = 1.0 (recovers global scoring).
+                # When \alpha < 1.0, under-represented strata receive higher relative weight per pair.
+                st_counts = pair_strata_counts[pair]
+                denom_weights = sum(max(stratum_total_pairs[s], 1) ** self.strata_alpha for s in all_active_strata)
+                sc_sum = 0.0
+                for s in all_active_strata:
+                    f_s = st_counts.get(s, 0)
+                    if f_s < 1:
+                        continue
+                    n_s = max(stratum_total_pairs[s], 1)
+                    q_s = (n_s**self.strata_alpha) / max(denom_weights, 1e-12)
+                    p_s = n_s / max(total_pairs, 1)
+                    w_s = q_s / max(p_s, 1e-12)
+                    lp_s = math.log(f_s / n_s)
+                    reduction_s = f_s * (log_prob(a) + log_prob(b) - lp_s)
+                    sc_sum += w_s * reduction_s
+                score = sc_sum
+            elif self.scoring_strategy == "coverage_aware":
+                # Coverage-aware scoring: combines stratum reweighting with
+                # cross-stratum coverage entropy bonus to reward cross-lingual merges
+                if abs(self.strata_alpha - 1.0) < 1e-9:
+                    sc_sum = f * (log_prob(a) + log_prob(b) - log_p_hat)
+                else:
+                    st_counts = pair_strata_counts[pair]
+                    denom_weights = sum(max(stratum_total_pairs[s], 1) ** self.strata_alpha for s in all_active_strata)
+                    sc_sum = 0.0
+                    for s in all_active_strata:
+                        f_s = st_counts.get(s, 0)
+                        if f_s < 1:
+                            continue
+                        n_s = max(stratum_total_pairs[s], 1)
+                        q_s = (n_s**self.strata_alpha) / max(denom_weights, 1e-12)
+                        p_s = n_s / max(total_pairs, 1)
+                        w_s = q_s / max(p_s, 1e-12)
+                        lp_s = math.log(f_s / n_s)
+                        reduction_s = f_s * (log_prob(a) + log_prob(b) - lp_s)
+                        sc_sum += w_s * reduction_s
+
+                st_counts = pair_strata_counts[pair]
+                if len(all_active_strata) > 1 and st_counts:
+                    h_entropy = 0.0
+                    for f_s in st_counts.values():
+                        if f_s > 0:
+                            p_stratum = f_s / f
+                            h_entropy -= p_stratum * math.log(p_stratum)
+                    max_h = math.log(len(all_active_strata))
+                    norm_h = h_entropy / max_h if max_h > 0.0 else 0.0
+                    score = sc_sum * (1.0 + self.coverage_weight * norm_h)
+                else:
+                    score = sc_sum
             else:
-                return a + b, False, None, 0
+                raise ValueError(f"Unknown scoring_strategy: {self.scoring_strategy}")
+            return score, log_p_hat, a + b
 
         def is_valid_pair(a_tok: str, b_tok: str) -> bool:
-            if (
-                self.allow_byte_merges
-                and ByteFallbackEngine.is_byte_token(a_tok)
-                and ByteFallbackEngine.is_byte_token(b_tok)
-            ):
-                return True
+            """Validates whether a candidate pair conforms to cross-word boundary constraints."""
             if not self.cross_word:
                 return True
             concat = a_tok + b_tok
             return self.space_char in concat[1:] and bool(concat.strip(self.space_char))
 
-        def compute_pair_score(
-            a: str, b: str, f: int, tot: int
-        ) -> Optional[Tuple[float, float, str, bool, Optional[str], int]]:
-            pair_res = resolve_pair(a, b)
-            if pair_res is None:
-                return None
-            merged, is_byte, decoded, fb_delta = pair_res
-            log_p_hat = math.log(f / max(tot, 1))
-            score = f * (log_prob(a) + log_prob(b) - log_p_hat)
-            if self.fallback_weight > 0.0 and fb_delta > 0:
-                score -= self.fallback_weight * f * fb_delta
-            return score, log_p_hat, merged, is_byte, decoded, fb_delta
-
-        chunks = [chunk for chunk in chunks if chunk]
-        unique_chunks = set(chunks)
-        chunk_enc_map = {chunk: model.encode(chunk) for chunk in unique_chunks}
-
-        if self.cross_word:
-            streams: List[List[str]] = []
-            cur_stream: List[str] = []
-            for chunk in chunks:
-                if not chunk:
-                    continue
-                cur_stream.extend(chunk_enc_map[chunk])
-                if len(cur_stream) >= 200:
-                    streams.append(cur_stream)
-                    cur_stream = []
-            if cur_stream:
-                streams.append(cur_stream)
-        else:
-            streams = [chunk_enc_map[chunk] for chunk in chunks if chunk]
-
-        # 1. Build initial inverted pair index
-        pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
-        pair_to_streams: Dict[Tuple[str, str], Set[int]] = defaultdict(set)
-        total_pairs = 0
-
-        for s_idx, stream in enumerate(streams):
-            for i in range(len(stream) - 1):
-                p = (stream[i], stream[i + 1])
-                pair_counts[p] += 1
-                pair_to_streams[p].add(s_idx)
-                total_pairs += 1
-
-        heap: List[_HeapEntry] = []
+        heap: List[Tuple[float, int, float, str, str]] = []
         for (a, b), f in pair_counts.items():
             if f < 2:
                 continue
@@ -219,82 +283,118 @@ class CrossEntropyMerging:
                 continue
             if not mergeable(a) or not mergeable(b):
                 continue
-            res = compute_pair_score(a, b, f, total_pairs)
-            if res is None:
-                continue
-            sc, lp_hat, m, is_byte, decoded, fb_delta = res
+            m = a + b
             if len(m) > max_len or m in model.vocab or m in new_probs or m in special_tokens:
                 continue
+            sc, lp_hat, _ = compute_pair_score(a, b, f, total_pairs)
             if self.min_pmi is not None:
                 pmi = (lp_hat - (log_prob(a) + log_prob(b))) / math.log(2)
                 if pmi < self.min_pmi:
                     continue
             if sc < self.max_score:
-                heap.append(_HeapEntry(sc, -f, lp_hat, a, b, m, is_byte, decoded, fb_delta))
+                # Deterministic tie-breaker: score, -f (higher freq), lp_hat, a, b
+                heap.append((sc, -f, lp_hat, a, b))
         heapq.heapify(heap)
 
         for _ in range(self.max_merges):
             if not pair_counts or total_pairs <= 0:
                 break
 
-            best_entry: Optional[_HeapEntry] = None
+            # Every objective depends on changing pair totals, including global
+            # scores for pairs in streams untouched by the previous merge.
+            if self.scoring_strategy in ("global", "balanced", "coverage_aware"):
+                heap = []
+                for (a_c, b_c), f_c in pair_counts.items():
+                    if f_c < 2:
+                        continue
+                    if not is_valid_pair(a_c, b_c) or not mergeable(a_c) or not mergeable(b_c):
+                        continue
+                    m_c = a_c + b_c
+                    if len(m_c) > max_len or m_c in model.vocab or m_c in new_probs or m_c in special_tokens:
+                        continue
+                    sc_c, lp_c, _ = compute_pair_score(a_c, b_c, f_c, total_pairs)
+                    if self.min_pmi is not None:
+                        pmi_c = (lp_c - (log_prob(a_c) + log_prob(b_c))) / math.log(2)
+                        if pmi_c < self.min_pmi:
+                            continue
+                    if sc_c < self.max_score:
+                        heap.append((sc_c, -f_c, lp_c, a_c, b_c))
+                heapq.heapify(heap)
+
+            best_pair: Tuple[str, str, str] | None = None
+            best_score = float("inf")
+            best_log_p = 0.0
 
             while heap:
-                entry = heapq.heappop(heap)
-                a, b = entry.token_a, entry.token_b
+                sc, neg_f, lp_hat, a, b = heapq.heappop(heap)
+                f_in_heap = -neg_f
                 cur_f = pair_counts.get((a, b), 0)
-                if cur_f >= 2 and cur_f != -entry.neg_freq:
-                    res = compute_pair_score(a, b, cur_f, total_pairs)
-                    if res is not None:
-                        sc2, lp2, m2, is_byte2, decoded2, fb_delta2 = res
-                        if sc2 < self.max_score:
-                            heapq.heappush(heap, _HeapEntry(sc2, -cur_f, lp2, a, b, m2, is_byte2, decoded2, fb_delta2))
+                if cur_f < 2:
                     continue
-                if cur_f >= 2 and cur_f == -entry.neg_freq:
-                    if not is_valid_pair(a, b):
+                if cur_f != f_in_heap:
+                    # Count drifted since this entry was pushed; re-score and
+                    # re-insert so the pair doesn't transiently drop out of
+                    # consideration.
+                    sc2, lp2, _ = compute_pair_score(a, b, cur_f, total_pairs)
+                    if sc2 < self.max_score:
+                        heapq.heappush(heap, (sc2, -cur_f, lp2, a, b))
+                    continue
+                if not is_valid_pair(a, b) or not mergeable(a) or not mergeable(b):
+                    continue
+                m = a + b
+                if len(m) > max_len or m in model.vocab or m in new_probs or m in special_tokens:
+                    continue
+                sc_curr, lp_hat_curr, _ = compute_pair_score(a, b, cur_f, total_pairs)
+                if self.min_pmi is not None:
+                    pmi = (lp_hat_curr - (log_prob(a) + log_prob(b))) / math.log(2)
+                    if pmi < self.min_pmi:
                         continue
-                    if not mergeable(a) or not mergeable(b):
-                        continue
-                    m = entry.merged
-                    if len(m) > max_len or m in model.vocab or m in new_probs or m in special_tokens:
-                        continue
-                    if self.min_pmi is not None:
-                        pmi = (entry.log_p_hat - (log_prob(a) + log_prob(b))) / math.log(2)
-                        if pmi < self.min_pmi:
-                            continue
-                    if entry.score < self.max_score:
-                        best_entry = entry
-                        break
+                if sc_curr >= self.max_score:
+                    continue
+                # If candidate rank drifted and is now worse than another item in heap, re-push and continue
+                cand_entry = (sc_curr, -cur_f, lp_hat_curr, a, b)
+                if heap and cand_entry > heap[0]:
+                    heapq.heappush(heap, cand_entry)
+                    continue
 
-            if best_entry is None or best_entry.score >= self.max_score:
+                best_score = sc_curr
+                best_pair = (a, b, m)
+                best_log_p = lp_hat_curr
                 break
 
-            a = best_entry.token_a
-            b = best_entry.token_b
-            merged = best_entry.merged
-            best_score = best_entry.score
-            best_log_p = best_entry.log_p_hat
-            pair_count = pair_counts[(a, b)]
+            if best_pair is None or best_score >= self.max_score:
+                break
 
+            a, b, merged = best_pair
+            pair_count = pair_counts[(a, b)]
             self.merges.append((a, b, merged, best_score, pair_count))
-            self.merge_records.append(
+            new_probs[merged] = best_log_p
+
+            st_freqs = dict(pair_strata_counts.get((a, b), {}))
+            if not st_freqs:
+                st_freqs = {"all": pair_count}
+            dom_stratum = min(st_freqs, key=lambda k: (-st_freqs[k], k))
+            dom_count = st_freqs[dom_stratum]
+            dom_ratio = dom_count / max(pair_count, 1)
+
+            self.merge_provenance.append(
                 MergeRecord(
-                    token_a=a,
-                    token_b=b,
-                    merged_token=merged,
+                    left=a,
+                    right=b,
+                    merged=merged,
                     score=best_score,
-                    frequency=pair_count,
-                    is_byte_merge=best_entry.is_byte,
-                    decoded_str=best_entry.decoded,
-                    byte_count_delta=best_entry.fallback_delta,
+                    total_frequency=pair_count,
+                    strata_frequencies=st_freqs,
+                    dominant_stratum=dom_stratum,
+                    dominance_ratio=dom_ratio,
                 )
             )
-            new_probs[merged] = best_log_p
 
             # Incremental update on affected streams only
             affected_streams = list(pair_to_streams.get((a, b), set()))
             for s_idx in affected_streams:
                 stream = streams[s_idx]
+                st = stream_strata[s_idx]
                 old_len = len(stream)
 
                 # Decrement old pairs
@@ -303,7 +403,13 @@ class CrossEntropyMerging:
                     pair_counts[p] -= 1
                     if pair_counts[p] <= 0:
                         pair_counts.pop(p, None)
+                    pair_strata_counts[p][st] -= 1
+                    if pair_strata_counts[p][st] <= 0:
+                        pair_strata_counts[p].pop(st, None)
+                        if not pair_strata_counts[p]:
+                            pair_strata_counts.pop(p, None)
                     pair_to_streams[p].discard(s_idx)
+                    stratum_total_pairs[st] -= 1
                 total_pairs -= old_len - 1
 
                 # Form new stream
@@ -320,63 +426,43 @@ class CrossEntropyMerging:
                 streams[s_idx] = new_stream
 
                 # Increment new pairs
+                # ponytail: total_pairs must include THIS stream's new pairs before
+                # scoring — otherwise heap ordering uses a stale f / N denominator.
                 total_pairs += len(new_stream) - 1
                 for i in range(len(new_stream) - 1):
                     p = (new_stream[i], new_stream[i + 1])
                     pair_counts[p] += 1
+                    pair_strata_counts[p][st] += 1
                     pair_to_streams[p].add(s_idx)
+                    stratum_total_pairs[st] += 1
                     a_p, b_p = p
                     if pair_counts[p] >= 2 and is_valid_pair(a_p, b_p):
                         if mergeable(a_p) and mergeable(b_p):
-                            res = compute_pair_score(a_p, b_p, pair_counts[p], total_pairs)
-                            if res is not None:
-                                sc_p, lp_p, m_p, is_byte_p, decoded_p, fb_p = res
-                                if (
-                                    len(m_p) <= max_len
-                                    and m_p not in model.vocab
-                                    and m_p not in new_probs
-                                    and m_p not in special_tokens
-                                ):
-                                    if sc_p < self.max_score:
-                                        heapq.heappush(
-                                            heap,
-                                            _HeapEntry(
-                                                sc_p,
-                                                -pair_counts[p],
-                                                lp_p,
-                                                a_p,
-                                                b_p,
-                                                m_p,
-                                                is_byte_p,
-                                                decoded_p,
-                                                fb_p,
-                                            ),
-                                        )
+                            sc, lp_hat, _ = compute_pair_score(a_p, b_p, pair_counts[p], total_pairs)
+                            if sc < self.max_score:
+                                heapq.heappush(heap, (sc, -pair_counts[p], lp_hat, a_p, b_p))
 
             pair_counts.pop((a, b), None)
+            pair_strata_counts.pop((a, b), None)
             pair_to_streams.pop((a, b), None)
 
             if self.verbose:
                 label = "SuperBPE" if self.cross_word else "CEM"
-                extra = (
-                    f" [BYTE->{best_entry.decoded!r}]"
-                    if best_entry.is_byte and best_entry.decoded
-                    else (" [BYTE-PREFIX]" if best_entry.is_byte else "")
-                )
                 print(
                     f"[{label}] Merge {len(self.merges):>4}: "
-                    f"{a!r} + {b!r} -> {merged!r}{extra} "
-                    f"(freq={pair_count}, score={best_score:.3f})"
+                    f"{a!r} + {b!r} -> {merged!r} "
+                    f"(freq={pair_count}, score={best_score:.3f}, stratum={dom_stratum})"
                 )
 
         if not new_probs:
             return model
 
         # Re-normalize the probability distribution over old + new tokens.
+        # ponytail: floor at 1e-300 — exp() underflow to 0.0 would crash log(p/total) below
         probs: Dict[str, float] = {tok: max(math.exp(lp), 1e-300) for tok, lp in model.vocab.items()}
         for tok, lp in new_probs.items():
             probs[tok] = max(math.exp(lp), 1e-300)
-        total_p = sum(probs.values())
+        total_p = math.fsum(probs.values())
         updated_vocab = {tok: math.log(p / total_p) for tok, p in probs.items()}
 
         token_to_id = dict(model.token_to_id)
@@ -396,6 +482,36 @@ class CrossEntropyMerging:
             byte_fallback=model.byte_fallback,
             unk_token=model.unk_token,
         )
+
+    def dominance_summary(self, dominance_threshold: float = 0.90) -> Dict[str, Any]:
+        """Summarizes merge allocation and concentration across strata."""
+        if not self.merge_provenance:
+            return {
+                "total_merges": 0,
+                "strata_allocation": {},
+                "concentrated_merges_count": 0,
+                "concentrated_merges_percent": 0.0,
+                "strata_represented_count": 0,
+                "herfindahl_index": 0.0,
+            }
+
+        total = len(self.merge_provenance)
+        alloc: Counter[str] = Counter()
+        concentrated = 0
+        for m in self.merge_provenance:
+            alloc[m.dominant_stratum] += 1
+            if m.dominance_ratio >= dominance_threshold:
+                concentrated += 1
+
+        hhi = sum((count / total) ** 2 for count in alloc.values()) if total > 0 else 0.0
+        return {
+            "total_merges": total,
+            "strata_allocation": dict(alloc),
+            "concentrated_merges_count": concentrated,
+            "concentrated_merges_percent": round((concentrated / total) * 100.0, 2),
+            "strata_represented_count": len(alloc),
+            "herfindahl_index": round(hhi, 4),
+        }
 
 
 class SuperBPE(CrossEntropyMerging):
@@ -418,9 +534,22 @@ class SuperBPE(CrossEntropyMerging):
         verbose: bool = False,
         space_char: str = "\u2581",
         min_pmi: Optional[float] = None,
-        allow_byte_merges: bool = False,
-        fallback_weight: float = 0.0,
+        scoring_strategy: str = "global",
+        strata_alpha: float = 0.5,
+        coverage_weight: float = 1.0,
     ):
+        """Initializes the SuperBPE cross-word merge optimizer.
+
+        Args:
+            max_merges: Maximum number of cross-word merged tokens to add.
+            max_score: Score threshold (merges with score >= max_score are discarded).
+            verbose: Whether to print progress logs during optimization.
+            space_char: Space token/character designating word boundaries.
+            min_pmi: Optional minimum Pointwise Mutual Information threshold.
+            scoring_strategy: Scoring objective ('global', 'balanced', or 'coverage_aware').
+            strata_alpha: Smoothing temperature exponent for stratum-balanced scoring.
+            coverage_weight: Multiplier weight for cross-stratum coverage entropy bonus.
+        """
         super().__init__(
             max_merges=max_merges,
             max_score=max_score,
@@ -428,6 +557,7 @@ class SuperBPE(CrossEntropyMerging):
             cross_word=True,
             space_char=space_char,
             min_pmi=min_pmi,
-            allow_byte_merges=allow_byte_merges,
-            fallback_weight=fallback_weight,
+            scoring_strategy=scoring_strategy,
+            strata_alpha=strata_alpha,
+            coverage_weight=coverage_weight,
         )
