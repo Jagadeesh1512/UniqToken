@@ -133,8 +133,9 @@ class CustomTokenizer:
         """
         from .merge_engine import get_merge_engine
 
+        resolved = get_merge_engine(engine)
+        self._resolved_merge_engine = resolved
         self._merge_engine_arg = engine
-        self._resolved_merge_engine = get_merge_engine(engine)
 
     def _get_cached_merge_table(self) -> Any:
         self._sync_model_caches()
@@ -317,8 +318,12 @@ class CustomTokenizer:
             constraints = production_constraints(table)
             # PythonRandomDecisions draws lazily only for visited eligible unblocked pairs,
             # strictly matching production random.random consumption order.
-            decisions = PythonRandomDecisions(dropout_prob) if dropout_prob > 0.0 else None
-            pieces, _ = apply_engine_to_pieces(self._resolved_merge_engine, tokens, table, constraints, decisions)
+            active_decisions: Optional[DropoutDecisions] = (
+                PythonRandomDecisions(dropout_prob) if dropout_prob > 0.0 else None
+            )
+            pieces, _ = apply_engine_to_pieces(
+                self._resolved_merge_engine, tokens, table, constraints, active_decisions
+            )
             return pieces
 
         cross = self._cross_word_tokens()
@@ -385,8 +390,12 @@ class CustomTokenizer:
             constraints = production_constraints(table)
             # PythonRandomDecisions draws lazily only for visited eligible unblocked pairs,
             # strictly matching production random.random consumption order.
-            decisions = PythonRandomDecisions(dropout_prob) if dropout_prob > 0.0 else None
-            tokens_out, _ = apply_engine_to_tokens(self._resolved_merge_engine, tokens, table, constraints, decisions)
+            active_decisions: Optional[DropoutDecisions] = (
+                PythonRandomDecisions(dropout_prob) if dropout_prob > 0.0 else None
+            )
+            tokens_out, _ = apply_engine_to_tokens(
+                self._resolved_merge_engine, tokens, table, constraints, active_decisions
+            )
             return tokens_out
 
         cross = self._cross_word_tokens()

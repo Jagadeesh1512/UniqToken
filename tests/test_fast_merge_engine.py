@@ -431,10 +431,12 @@ class CustomTokenizerIntegrationTests(unittest.TestCase):
         super().tearDown()
 
     def test_default_engine_selection_unchanged(self):
+        self.assertNotIn("UNIQTOKEN_MERGE_ENGINE", os.environ)
         tok = _tokenizer([A, B], [A + B])
         self.assertIsNone(tok.merge_engine)
-        pieces = tok._apply_cross_word_merges([A, B])
-        self.assertEqual(pieces, [A + B])
+        self.assertIsNone(tok._merge_engine_arg)
+        merged_pieces = tok._apply_cross_word_merges([A, B])
+        self.assertEqual(merged_pieces, [A + B])
 
     def test_explicit_fast_engine_selection(self):
         tok = _tokenizer([A, B], [A + B], merge_engine="fast")
@@ -497,6 +499,18 @@ class CustomTokenizerIntegrationTests(unittest.TestCase):
 
         with self.assertRaises(InvalidConfiguration):
             tok.set_merge_engine("invalid_engine_name")
+        self.assertIsNone(tok.merge_engine)
+        self.assertIsNone(tok._merge_engine_arg)
+
+    def test_set_merge_engine_failure_atomic(self):
+        tok = _tokenizer([A, B], [A + B], merge_engine="fast")
+        self.assertEqual(tok.merge_engine, "fast")
+        self.assertEqual(tok._merge_engine_arg, "fast")
+        with self.assertRaises(InvalidConfiguration):
+            tok.set_merge_engine("invalid_engine_name")
+        # Ensure previous valid engine and arg were not mutated
+        self.assertEqual(tok.merge_engine, "fast")
+        self.assertEqual(tok._merge_engine_arg, "fast")
 
     def test_environment_variable_override(self):
         with patch.dict(os.environ, {"UNIQTOKEN_MERGE_ENGINE": "fast"}):

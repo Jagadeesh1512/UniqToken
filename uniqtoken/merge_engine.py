@@ -865,8 +865,7 @@ def differential_against_production(
     """
     from unittest.mock import patch
 
-    if engine is None:
-        engine = ReferenceMergeEngine()
+    eval_engine: MergeEngine = engine if engine is not None else ReferenceMergeEngine()
     table = cross_word_membership_table(tokenizer)
     constraints = production_constraints(table)
 
@@ -895,8 +894,8 @@ def differential_against_production(
             prod_pieces = tokenizer._apply_cross_word_merges(list(pieces), dropout_prob=0.0)
             leaves = [Token(p, tokenizer.model.token_to_id.get(p, i), (i, i + 1)) for i, p in enumerate(pieces)]
             prod_tokens = tokenizer._apply_cross_word_merges_with_spans(leaves, dropout_prob=0.0)
-            ref_pieces, plan = apply_engine_to_pieces(engine, pieces, table, constraints, ref_decisions)
-            ref_tokens, _ = apply_engine_to_tokens(engine, leaves, table, constraints, None)
+            ref_pieces, plan = apply_engine_to_pieces(eval_engine, pieces, table, constraints, ref_decisions)
+            ref_tokens, _ = apply_engine_to_tokens(eval_engine, leaves, table, constraints, None)
         else:
             # Map True(drop)->0.0 and False(keep)->0.99 so production's
             # ``random.random() < p`` with p=0.5 matches the Boolean tape.
@@ -907,9 +906,9 @@ def differential_against_production(
             with patch("random.random", side_effect=list(draws)):
                 prod_tokens = tokenizer._apply_cross_word_merges_with_spans(list(leaves), dropout_prob=dropout_prob)
             tape_a = BooleanTapeDecisions(list(decision_tape))
-            ref_pieces, plan = apply_engine_to_pieces(engine, pieces, table, constraints, tape_a)
+            ref_pieces, plan = apply_engine_to_pieces(eval_engine, pieces, table, constraints, tape_a)
             tape_b = BooleanTapeDecisions(list(decision_tape))
-            ref_tokens, _ = apply_engine_to_tokens(engine, leaves, table, constraints, tape_b)
+            ref_tokens, _ = apply_engine_to_tokens(eval_engine, leaves, table, constraints, tape_b)
     finally:
         tokenizer._resolved_merge_engine = old_engine
 

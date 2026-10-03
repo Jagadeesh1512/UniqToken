@@ -30,6 +30,16 @@ from uniqtoken.unigram_trainer import UnigramModel
 S = "\u2581"
 
 
+def _create_baseline_benchmark_tokenizer(model: UnigramModel) -> CustomTokenizer:
+    """Instantiate a production baseline tokenizer with merge engine disabled."""
+    return CustomTokenizer(
+        Normalizer(normalize_unicode=False),
+        RegexPreTokenizer(),
+        model,
+        merge_engine="default",
+    )
+
+
 def build_synthetic_benchmark_fixture(
     seq_len: int,
     regime: str,
@@ -79,12 +89,7 @@ def build_synthetic_benchmark_fixture(
         byte_fallback=False,
     )
     # Build baseline tokenizer with merge_engine="default" to isolate production
-    tok = CustomTokenizer(
-        Normalizer(normalize_unicode=False),
-        RegexPreTokenizer(),
-        model,
-        merge_engine="default",
-    )
+    tok = _create_baseline_benchmark_tokenizer(model)
     # Build table directly from tokenizer's own cross-word definition to guarantee consistency
     table = cross_word_membership_table(tok)
     return pieces, table, tok
@@ -95,17 +100,18 @@ def run_benchmark() -> List[Dict[str, Any]]:
     fast_engine = FastMergeEngine()
 
     test_configs = [
-        (64, "sparse"),
-        (64, "dense"),
-        (256, "sparse"),
-        (256, "medium"),
-        (256, "hierarchical"),
-        (1024, "sparse"),
-        (1024, "medium"),
-        (1024, "dense"),
-        (1024, "hierarchical"),
-        (4096, "sparse"),
-        (4096, "medium"),
+        # (seq_len, regime, iterations, warmup_iters)
+        (64, "sparse", 100, 5),
+        (64, "dense", 100, 5),
+        (256, "sparse", 100, 5),
+        (256, "medium", 100, 5),
+        (256, "hierarchical", 100, 5),
+        (1024, "sparse", 50, 5),
+        (1024, "medium", 50, 5),
+        (1024, "dense", 50, 5),
+        (1024, "hierarchical", 50, 5),
+        (4096, "sparse", 25, 5),
+        (4096, "medium", 25, 5),
     ]
 
     records: List[Dict[str, Any]] = []
@@ -117,7 +123,7 @@ def run_benchmark() -> List[Dict[str, Any]]:
     )
     print("-" * 105)
 
-    for seq_len, regime in test_configs:
+    for seq_len, regime, iters, warmup_iters in test_configs:
         pieces, table, tok = build_synthetic_benchmark_fixture(seq_len, regime)
         constraints = MergeConstraints(
             semantic_profile=SemanticProfile.SUPER_BPE_PASS_V1,
@@ -139,10 +145,6 @@ def run_benchmark() -> List[Dict[str, Any]]:
         parity = ref_out == fast_out == prod_out == tok_fast_out and ref_plan.applied_merges == fast_plan.applied_merges
         if not parity:
             raise RuntimeError(f"Parity mismatch on {seq_len}, {regime}")
-
-        # Iteration budget based on sequence length
-        iters = 100 if seq_len <= 256 else (50 if seq_len <= 1024 else 25)
-        warmup_iters = 5
 
         # Warm-up phase
         for _ in range(warmup_iters):
@@ -179,6 +181,7 @@ def run_benchmark() -> List[Dict[str, Any]]:
             "regime": regime,
             "applied_merges": ref_plan.applied_merges,
             "iterations": iters,
+            "warmup_iterations": warmup_iters,
             "reference_ms": round(ref_mean, 3),
             "fast_ms": round(fast_mean, 3),
             "reference_min_ms": round(ref_min, 3),
@@ -207,4 +210,5 @@ if __name__ == "__main__":
     output_path = Path(__file__).parent / "fast_merge_engine_results.json"
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(benchmark_records, f, indent=2)
+        f.write("\n")
     print(f"Results saved to {output_path}")
