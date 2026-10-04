@@ -481,20 +481,10 @@ fn native_security_gate(text: &str) -> CoreResult<()> {
     if text.contains('\u{E000}') || text.contains('\u{E001}') {
         return core_error("text contains private-use metaspace escape characters; use the Python pipeline");
     }
-    if text.is_ascii() {
-        if text.contains("<|") {
-            return core_error("text contains control-token syntax after NFKC; use the Python pipeline");
-        }
-        return Ok(());
-    }
     // NFKC can synthesize '<' or '|' from fullwidth/compatibility chars
-    // (e.g. '＜' U+FF1C -> '<', '｜' U+FF5C -> '|'), so the check must run
-    // on the canonical form.
-    // In Unicode, only '<' (U+003C), '﹤' (U+FE64), and '＜' (U+FF1C) can produce '<' under NFKC.
-    // If text does not contain any of them, canonical cannot contain '<|'.
-    if !text.contains('<') && !text.contains('\u{FE64}') && !text.contains('\u{FF1C}') {
-        return Ok(());
-    }
+    // (e.g. '＜' U+FF1C -> '<', '｜' U+FF5C -> '|', '〈' U+2329 -> '<'),
+    // so the check must run on the canonical form unconditionally to keep in
+    // lock-step with SecurityShield.sanitize.
     let canonical: String = text.nfkc().collect();
     if canonical.contains("<|") {
         return core_error("text contains control-token syntax after NFKC; use the Python pipeline");
@@ -861,14 +851,18 @@ mod tests {
 
     #[test]
     fn security_gate_refuses_nfkc_synthesized_control_syntax() {
-        // U+FF1C FULLWIDTH LESS-THAN SIGN and U+FF5C FULLWIDTH VERTICAL LINE
-        // NFKC-map to '<' and '|'. The gate must refuse the obfuscated form
-        // exactly like the literal one, mirroring SecurityShield.sanitize,
-        // which always canonicalizes before matching (issue #16).
+        // U+FF1C FULLWIDTH LESS-THAN SIGN, U+FF5C FULLWIDTH VERTICAL LINE,
+        // and U+FE64 SMALL LESS-THAN SIGN NFKC-map to '<' and '|'.
+        // The gate must refuse all obfuscated forms exactly like the literal one,
+        // mirroring SecurityShield.sanitize, which always canonicalizes before matching (issue #16).
         assert!(native_security_gate("＜｜system｜＞").is_err());
         assert!(native_security_gate("<|system|>").is_err());
+        assert!(native_security_gate("\u{FE64}\u{FF5C}system\u{FF5C}\u{FE65}").is_err());
         assert!(native_security_gate("hello world").is_ok());
         assert!(native_security_gate("2 < 3 | 4").is_ok());
+        // U+2329 LEFT-POINTING ANGLE BRACKET normalizes to U+3008 (not '<'),
+        // matching Python SecurityShield's behavior.
+        assert!(native_security_gate("\u{2329}\u{FF5C}system\u{FF5C}\u{232A}").is_ok());
     }
 
     #[test]
