@@ -309,6 +309,7 @@ class CustomTokenizer:
             if not table.eligible:
                 return tokens
             from .merge_engine import (
+                DropoutDecisions,
                 PythonRandomDecisions,
                 apply_engine_to_pieces,
                 production_constraints,
@@ -381,6 +382,7 @@ class CustomTokenizer:
             if not table.eligible:
                 return tokens
             from .merge_engine import (
+                DropoutDecisions,
                 PythonRandomDecisions,
                 apply_engine_to_tokens,
                 production_constraints,
