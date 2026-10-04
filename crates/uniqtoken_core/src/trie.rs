@@ -241,6 +241,7 @@ impl RustPrefixTrie {
         }
     }
 
+    #[cfg(any(feature = "python", test))]
     pub(crate) fn common_prefix_search_chars(
         &self,
         chars: &[char],
@@ -265,6 +266,7 @@ impl RustPrefixTrie {
     /// Callers **must** ensure every byte in `bytes[start..]` satisfies
     /// `b < 0x80`.  The easiest way is to gate on `str::is_ascii()` before
     /// entering the ASCII fast-path.
+    #[cfg(any(feature = "python", test))]
     pub(crate) fn common_prefix_search_ascii(
         &self,
         bytes: &[u8],
